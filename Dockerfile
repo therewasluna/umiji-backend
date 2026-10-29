@@ -22,6 +22,7 @@ FROM node:24.22-trixie-slim AS backend-build
 WORKDIR /opt/app
 
 COPY package*.json ./
+COPY vendor ./vendor
 COPY patches ./patches
 COPY prisma ./prisma
 COPY rspack.config.mjs ./
