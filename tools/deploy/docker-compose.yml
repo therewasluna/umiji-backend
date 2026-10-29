@@ -1,0 +1,108 @@
+# Umiji: the panel (with Postgres and Valkey) and the subscription page, on one server or on
+# separate ones. COMPOSE_PROFILES in .env sets what runs here. See DEPLOY.md.
+name: umiji
+
+x-common: &common
+  ulimits:
+    nofile:
+      soft: 1048576
+      hard: 1048576
+  restart: always
+  networks:
+    - umiji-network
+  logging:
+    driver: json-file
+    options:
+      max-size: 100m
+      max-file: 5
+
+services:
+  umiji:
+    image: umiji-panel:latest
+    pull_policy: never # built by tools/deploy.sh; never fetch a same-named image from Docker Hub
+    profiles: [panel]
+    container_name: umiji
+    hostname: umiji
+    <<: *common
+    env_file: panel.env
+    volumes:
+      - valkey-socket:/var/run/valkey
+    ports:
+      - 127.0.0.1:3000:3000
+      - 127.0.0.1:3001:3001
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -f http://localhost:$${METRICS_PORT:-3001}/health']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      umiji-db:
+        condition: service_healthy
+      umiji-redis:
+        condition: service_healthy
+
+  umiji-db:
+    image: postgres:18.4
+    profiles: [panel]
+    container_name: umiji-db
+    hostname: umiji-db
+    shm_size: 512mb
+    <<: *common
+    env_file: panel.env
+    environment:
+      TZ: UTC # DO NOT CHANGE DATABASE TIMEZONE. IT MUST BE UTC.
+    ports:
+      - 127.0.0.1:6767:5432
+    volumes:
+      - umiji-db-data:/var/lib/postgresql
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}']
+      interval: 3s
+      timeout: 10s
+      retries: 3
+
+  umiji-redis:
+    image: valkey/valkey:9-alpine
+    profiles: [panel]
+    container_name: umiji-redis
+    hostname: umiji-redis
+    <<: *common
+    volumes:
+      - valkey-socket:/var/run/valkey
+    command: >
+      valkey-server
+      --save ""
+      --appendonly no
+      --maxmemory-policy noeviction
+      --loglevel warning
+      --unixsocket /var/run/valkey/valkey.sock
+      --unixsocketperm 777
+      --port 0
+    healthcheck:
+      test: ['CMD', 'valkey-cli', '-s', '/var/run/valkey/valkey.sock', 'ping']
+      interval: 3s
+      timeout: 3s
+      retries: 3
+
+  umiji-subscription-page:
+    image: umiji-subscription-page:latest
+    pull_policy: never
+    profiles: [subpage]
+    container_name: umiji-subscription-page
+    hostname: umiji-subscription-page
+    <<: *common
+    env_file: subpage.env
+    ports:
+      - 127.0.0.1:3010:3010
+
+networks:
+  umiji-network:
+    name: umiji-network
+    driver: bridge
+
+volumes:
+  umiji-db-data:
+    name: umiji-db-data
+  valkey-socket:
+    name: valkey-socket

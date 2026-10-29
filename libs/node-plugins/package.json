@@ -1,0 +1,33 @@
+{
+  "name": "@umiji/node-plugins",
+  "version": "0.8.3",
+  "description": "A library for Umiji Node Plugins.",
+  "keywords": [],
+  "homepage": "https://github.com/therewasluna/umiji",
+  "bugs": {
+    "url": "https://github.com/therewasluna/umiji-backend/issues"
+  },
+  "license": "AGPL-3.0-only",
+  "author": "Umiji",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/therewasluna/umiji-backend.git"
+  },
+  "files": [
+    "build/**/*"
+  ],
+  "main": "build/backend/index.js",
+  "browser": "build/frontend/index.js",
+  "types": "build/backend/index.d.ts",
+  "scripts": {
+    "clean": "rm -rf build",
+    "build:backend": "tsc -p tsconfig.backend.json",
+    "build:frontend": "tsc -p tsconfig.frontend.json",
+    "build": "npm run clean && npm run build:backend && npm run build:frontend",
+    "prepublish": "npm run build"
+  },
+  "dependencies": {
+    "zod": "4.5.4"
+  },
+  "public": true
+}

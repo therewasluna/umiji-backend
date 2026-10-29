@@ -1,0 +1,4 @@
+.node-e2e/
+logs/
+dist-worker/
+dist-e2e/
