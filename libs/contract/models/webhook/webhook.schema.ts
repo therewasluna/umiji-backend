@@ -173,9 +173,5 @@ export type TUmijiWebhookNodeEvent = z.infer<typeof UmijiWebhookNodeEvents>;
 export type TUmijiWebhookServiceEvent = z.infer<typeof UmijiWebhookServiceEvents>;
 export type TUmijiWebhookErrorsEvent = z.infer<typeof UmijiWebhookErrorsEvents>;
 export type TUmijiWebhookCrmEvent = z.infer<typeof UmijiWebhookCrmEvents>;
-export type TUmijiWebhookUserHwidDevicesEvent = z.infer<
-    typeof UmijiWebhookUserHwidDevicesEvents
->;
-export type TUmijiWebhookTorrentBlockerEvent = z.infer<
-    typeof UmijiWebhookTorrentBlockerEvents
->;
+export type TUmijiWebhookUserHwidDevicesEvent = z.infer<typeof UmijiWebhookUserHwidDevicesEvents>;
+export type TUmijiWebhookTorrentBlockerEvent = z.infer<typeof UmijiWebhookTorrentBlockerEvents>;

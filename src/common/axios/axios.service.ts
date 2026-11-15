@@ -6,9 +6,12 @@ import axios, {
     AxiosResponse,
     RawAxiosRequestHeaders,
 } from 'axios';
+import { existsSync } from 'node:fs';
+import http from 'node:http';
 import https from 'node:https';
 import { promisify } from 'node:util';
 import { constants as zlibConstants, zstdCompress, ZstdOptions } from 'node:zlib';
+import { ProxyAgent } from 'proxy-agent';
 
 import { Injectable, Logger } from '@nestjs/common';
 import { CommandBus } from '@nestjs/cqrs';
@@ -30,6 +33,7 @@ import {
     RecreateTablesCommand,
     RemoveUserCommand,
     RemoveUsersCommand,
+    SyncIpLimitsCommand,
     StartXrayCommand,
     StopXrayCommand,
     SyncCommand,
@@ -44,8 +48,7 @@ import { formatExecutionTime, getTime } from '@common/utils/get-elapsed-time';
 import { GetNodeJwtCommand } from '@modules/keygen/commands/get-node-jwt';
 
 import { fail, ok, TResult } from '../types';
-import { INodeConnectionOpts, INodeRequestOpts, IMtlsOptions } from './axios.interfaces';
-import { MtlsSocksProxyAgent } from './mtls-agent';
+import { INodeConnectionOpts, INodeRequestOpts } from './axios.interfaces';
 
 const EMPTY_BODY: Readonly<Record<string, never>> = {};
 const MAX_NODE_ERROR_LENGTH = 2000;
@@ -62,14 +65,26 @@ const ZSTD_OPTIONS: ZstdOptions = {
     chunkSize: 1024 * 1024,
 };
 
+// Inside a container 127.0.0.1 is the container itself. A proxy on the panel's own server is
+// reached through host.docker.internal (`extra_hosts: host-gateway` in the compose file).
+const IN_CONTAINER = existsSync('/.dockerenv') || existsSync('/run/.containerenv');
+const LOOPBACK_HOST = /^(localhost|127(?:\.\d{1,3}){3}|\[::1\])$/i;
+
+function reachableProxyUrl(proxyUrl: string): string {
+    if (!IN_CONTAINER) return proxyUrl;
+    const url = new URL(proxyUrl);
+    if (!LOOPBACK_HOST.test(url.hostname)) return proxyUrl;
+    url.hostname = 'host.docker.internal';
+    return url.href;
+}
+
 @Injectable()
 export class AxiosService {
     private readonly logger = new Logger(AxiosService.name);
 
     public axiosInstance: AxiosInstance;
-    private mtlsOptions: IMtlsOptions;
-    private servername: string | undefined;
-    private readonly socksAgentCache = new Map<string, MtlsSocksProxyAgent>();
+    private tlsOptions: https.AgentOptions;
+    private readonly proxyAgents = new Map<string, ProxyAgent>();
 
     constructor(
         private readonly commandBus: CommandBus,
@@ -89,58 +104,53 @@ export class AxiosService {
             const result = await this.commandBus.execute(new GetNodeJwtCommand());
 
             if (!result.isOk) {
-                throw new Error(
-                    'There are a problem with the JWT token. Please restart Umiji.',
-                );
+                throw new Error('There are a problem with the JWT token. Please restart Umiji.');
             }
 
             const jwt = result.response;
 
             this.axiosInstance.defaults.headers.common['Authorization'] = `Bearer ${jwt.jwtToken}`;
 
-            if (this.configService.getOrThrow('SERVICE_SNI_VERIFICATION')) {
-                this.servername = deriveSni(jwt.caCert, jwt.jwtPublicKey);
-            } else {
-                this.servername = undefined;
-            }
+            const servername = this.configService.getOrThrow('SERVICE_SNI_VERIFICATION')
+                ? deriveSni(jwt.caCert, jwt.jwtPublicKey)
+                : undefined;
 
-            this.mtlsOptions = {
+            this.tlsOptions = {
                 cert: jwt.clientCert,
                 key: jwt.clientKey,
                 ca: jwt.caCert,
-            };
-
-            const httpsAgent = new https.Agent({
-                ...this.mtlsOptions,
                 checkServerIdentity: () => undefined,
                 rejectUnauthorized: true,
                 keepAlive: true,
                 minVersion: 'TLSv1.3',
-                servername: this.servername,
-            });
+                servername,
+            };
 
-            this.axiosInstance.defaults.httpsAgent = httpsAgent;
+            this.axiosInstance.defaults.httpsAgent = new https.Agent(this.tlsOptions);
+            this.proxyAgents.clear();
 
             this.logger.log('Interceptor registered');
-            this.logger.log(`Node SNI: ${this.servername}`);
+            this.logger.log(`Node SNI: ${servername}`);
         } catch (error) {
             this.logger.error(`Error in onApplicationBootstrap: ${error}`);
             throw error;
         }
     }
 
-    private resolveAgent(proxyUrl: null | string): https.Agent {
+    private resolveAgent(proxyUrl: null | string): http.Agent {
         if (!proxyUrl) {
             return this.axiosInstance.defaults.httpsAgent as https.Agent;
         }
 
-        const cached = this.socksAgentCache.get(proxyUrl);
-        if (cached) return cached;
+        let agent = this.proxyAgents.get(proxyUrl);
+        if (!agent) {
+            const target = reachableProxyUrl(proxyUrl);
+            // The TLS options reach the tunnelled connection to the node, so mTLS and SNI hold.
+            agent = new ProxyAgent({ ...this.tlsOptions, getProxyForUrl: () => target });
+            this.proxyAgents.set(proxyUrl, agent);
+        }
 
-        const httpsAgent = new MtlsSocksProxyAgent(proxyUrl, this.mtlsOptions, this.servername);
-        this.socksAgentCache.set(proxyUrl, httpsAgent);
-
-        return httpsAgent;
+        return agent;
     }
 
     private getNodeUrl(url: string, path: string, port: null | number): string {
@@ -449,6 +459,21 @@ export class AxiosService {
             path: DropUsersConnectionsCommand.url,
             opts,
             data,
+            timeout: 10_000,
+        });
+    }
+
+    public async syncIpLimits(
+        data: SyncIpLimitsCommand.Request,
+        opts: INodeConnectionOpts,
+    ): Promise<TResult<SyncIpLimitsCommand.Response['response']>> {
+        return this.request<SyncIpLimitsCommand.Response>({
+            label: 'SYNC IP LIMITS',
+            path: SyncIpLimitsCommand.url,
+            opts,
+            data,
+            compress: data.users.length > 500,
+            logAxiosError: false,
             timeout: 10_000,
         });
     }

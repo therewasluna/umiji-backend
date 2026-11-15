@@ -36,6 +36,7 @@ export const configSchema = z
             .transform((port) => parseInt(port, 10)),
         APP_SECRET: z
             .string()
+            .min(32, 'APP_SECRET must be at least 32 characters')
             .refine((val) => val !== 'change_me', 'APP_SECRET cannot be set to "change_me"'),
         JWT_AUTH_LIFETIME: z
             .string()

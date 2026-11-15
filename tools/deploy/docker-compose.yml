@@ -25,6 +25,9 @@ services:
     hostname: umiji
     <<: *common
     env_file: panel.env
+    # Lets a node proxy on this server be set as 127.0.0.1 (the panel maps it to host.docker.internal).
+    extra_hosts:
+      - host.docker.internal:host-gateway
     volumes:
       - valkey-socket:/var/run/valkey
     ports:
@@ -96,6 +99,26 @@ services:
     ports:
       - 127.0.0.1:3010:3010
 
+  # Built-in HTTPS (the caddy profile): Caddy gets and renews the certificates itself.
+  # up.sh writes caddy/Caddyfile from .env.
+  umiji-caddy:
+    image: caddy:2.10.2
+    profiles: [caddy]
+    container_name: umiji-caddy
+    hostname: umiji-caddy
+    <<: *common
+    environment:
+      # Changes when up.sh writes a different Caddyfile, so the container restarts with it.
+      CADDYFILE_HASH: ${CADDYFILE_HASH:-}
+    ports:
+      - 80:80
+      - 443:443
+      - 443:443/udp
+    volumes:
+      - ./caddy:/etc/caddy:ro
+      - umiji-caddy-data:/data
+      - umiji-caddy-config:/config
+
 networks:
   umiji-network:
     name: umiji-network
@@ -106,3 +129,8 @@ volumes:
     name: umiji-db-data
   valkey-socket:
     name: valkey-socket
+  # Caddy's certificates and keys. Keep it: Let's Encrypt limits how often a domain can get a new one.
+  umiji-caddy-data:
+    name: umiji-caddy-data
+  umiji-caddy-config:
+    name: umiji-caddy-config

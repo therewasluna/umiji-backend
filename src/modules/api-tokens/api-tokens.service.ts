@@ -7,7 +7,6 @@ import { CommandBus } from '@nestjs/cqrs';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
 import { TypedConfigService } from '@common/config/app-config/typed-config.service';
-import { RawCacheService } from '@common/raw-cache';
 import { fail, ok, TResult } from '@common/types';
 import { ERRORS, EVENTS } from '@libs/contracts/constants';
 
@@ -28,7 +27,6 @@ import { ScopeCatalogService } from './scope-catalog.service';
 export class ApiTokensService {
     private readonly logger = new Logger(ApiTokensService.name);
     constructor(
-        private readonly rawCacheService: RawCacheService,
         private readonly apiTokensRepository: ApiTokensRepository,
         private readonly commandBus: CommandBus,
         private readonly configService: TypedConfigService,
@@ -98,8 +96,6 @@ export class ApiTokensService {
             }
 
             await this.apiTokensRepository.deleteByUUID(uuid);
-
-            await this.rawCacheService.del(`api:${uuid}`);
 
             this.eventEmitter.emit(
                 EVENTS.SERVICE.API_TOKEN_DELETED,

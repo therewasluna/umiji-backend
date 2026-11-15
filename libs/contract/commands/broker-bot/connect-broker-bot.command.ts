@@ -11,7 +11,7 @@ export namespace ConnectBrokerBotCommand {
     export const endpointDetails = getEndpointDetails(
         BROKER_BOT_ROUTES.CONNECT,
         'post',
-        'Connect the bot or change its group, language or greeting',
+        'Connect the bot or change its group',
         { scope: 'connect', kind: 'write' },
         'Validates the token with Telegram and creates the Review Receipts and Logs topics in the staff group when it is set or changed.',
     );
@@ -29,8 +29,6 @@ export namespace ConnectBrokerBotCommand {
                 .trim()
                 .regex(/^-?\d+$/, 'Enter a valid numeric group chat ID (e.g. -1001234567890).'),
         ),
-        lang: z.enum(['en', 'fa']),
-        greeting: z.nullable(z.string().trim().max(3000)),
     });
 
     export const ResponseSchema = BrokerBotResponseSchema;

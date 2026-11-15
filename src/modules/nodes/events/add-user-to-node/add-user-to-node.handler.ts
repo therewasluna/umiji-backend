@@ -4,6 +4,7 @@ import { EventsHandler } from '@nestjs/cqrs';
 
 import { AddUserCommand as AddUserToNodeCommandSdk } from '@umiji/node-contract';
 
+import { getMtprotoSecret } from '@common/helpers/xray-config/mtproto-secret';
 import {
     getCipherTypeFromString,
     getSsPassword,
@@ -38,7 +39,15 @@ export class AddUserToNodeHandler implements IEventHandler<AddUserToNodeEvent> {
                 return;
             }
 
-            const { id, trojanPassword, vlessUuid, ssPassword, inbounds } = userEntity.response;
+            const {
+                id,
+                trojanPassword,
+                vlessUuid,
+                ssPassword,
+                mtprotoSecret,
+                mtprotoAdTag,
+                inbounds,
+            } = userEntity.response;
 
             if (inbounds.length === 0) {
                 return;
@@ -96,6 +105,14 @@ export class AddUserToNodeHandler implements IEventHandler<AddUserToNodeEvent> {
                                 type: inboundType,
                                 username: id.toString(),
                                 password: vlessUuid,
+                                tag: inbound.tag,
+                            };
+                        case 'mtproto':
+                            return {
+                                type: inboundType,
+                                username: id.toString(),
+                                secret: getMtprotoSecret({ mtprotoSecret, vlessUuid }),
+                                adTag: mtprotoAdTag,
                                 tag: inbound.tag,
                             };
                         default:

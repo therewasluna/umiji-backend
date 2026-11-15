@@ -62,7 +62,8 @@ if [[ $CMD == init ]]; then
     sed 's|^UMIJI_PANEL_URL=.*|UMIJI_PANEL_URL=http://umiji:3000|' "$SUBPAGE/.env.sample" | put_new subpage.env
     cat <<EOF
 ==> the stack is in $HOST:$DIR. Existing .env files were kept. Edit them there:
-  .env          COMPOSE_PROFILES: what runs on this server (panel, subpage or both)
+  .env          COMPOSE_PROFILES: what runs on this server (panel, subpage or both). HTTPS: add caddy
+                and set CADDY_*_DOMAIN for built-in certificates, or leave it out and run your own nginx.
   panel.env     PANEL_DOMAIN, SUB_PUBLIC_DOMAIN (the sub page's domain), Telegram settings if you use them
   subpage.env   UMIJI_PANEL_URL: keep http://umiji:3000 when the panel runs on this server,
                 otherwise https://<panel domain>. UMIJI_API_TOKEN: create it in the panel once it's up.

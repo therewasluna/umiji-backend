@@ -139,8 +139,7 @@ export class AuthController {
     async passkeyAuthenticationOptions(
         @GetUmijiSettings() umijiSettings: UmijiSettingsEntity,
     ): Promise<GetPasskeyAuthenticationOptionsResponseDto> {
-        const result =
-            await this.authService.generatePasskeyAuthenticationOptions(umijiSettings);
+        const result = await this.authService.generatePasskeyAuthenticationOptions(umijiSettings);
 
         const data = errorHandler(result);
         return {

@@ -13,6 +13,7 @@ import {
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 
 import { Endpoint } from '@common/decorators/base-endpoint';
+import { GetBroker } from '@common/decorators/get-broker';
 import { IpAddress } from '@common/decorators/get-ip';
 import { UserAgent } from '@common/decorators/get-useragent';
 import { Roles } from '@common/decorators/roles/roles';
@@ -31,12 +32,17 @@ import {
     GetSubscriptionByShortUuidProtectedCommand,
     GetSubscriptionByUsernameCommand,
     GetSubscriptionsCommand,
+    GetTelegramLinksByUserIdCommand,
 } from '@libs/contracts/commands';
 import { GetSubpageConfigByShortUuidCommand } from '@libs/contracts/commands/subscriptions/subpage/get-subpage-config-by-shortuuid.command';
 import { ROLE } from '@libs/contracts/constants';
 
+import { BrokerEntity } from '@modules/brokers/entities';
+
 import {
     GetConnectionKeysByUserIdResponseDto,
+    GetTelegramLinksByUserIdParamDto,
+    GetTelegramLinksByUserIdResponseDto,
     GetRawSubscriptionByShortUuidParamDto,
     GetRawSubscriptionByShortUuidQueryDto,
     GetRawSubscriptionByShortUuidResponseDto,
@@ -220,6 +226,26 @@ export class SubscriptionsController {
     ): Promise<GetConnectionKeysByUserIdResponseDto> {
         const { userId } = param;
         const result = await this.subscriptionService.getConnectionKeysByUserId(userId);
+        const data = errorHandler(result);
+        return {
+            response: data,
+        };
+    }
+
+    @Roles(ROLE.ADMIN, ROLE.API, ROLE.BROKER)
+    @Endpoint({
+        command: GetTelegramLinksByUserIdCommand,
+        httpCode: HttpStatus.OK,
+        type: GetTelegramLinksByUserIdResponseDto,
+    })
+    async getTelegramLinksByUserId(
+        @Param() param: GetTelegramLinksByUserIdParamDto,
+        @GetBroker() broker: BrokerEntity | undefined,
+    ): Promise<GetTelegramLinksByUserIdResponseDto> {
+        const result = await this.subscriptionService.getTelegramLinksByUserId(
+            param.userId,
+            broker,
+        );
         const data = errorHandler(result);
         return {
             response: data,

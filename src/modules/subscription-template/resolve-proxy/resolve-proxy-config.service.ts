@@ -20,6 +20,7 @@ import {
     resolveInboundAndMlDsa65PublicKey,
     resolveInboundAndPublicKey,
 } from '@common/helpers/xray-config';
+import { getMtprotoLinkSecret } from '@common/helpers/xray-config/mtproto-secret';
 import { getSsPassword, isSS2022MethodFromMethod } from '@common/helpers/xray-config/ss-cipher';
 import { getVlessFlow } from '@common/utils/flow';
 import { TemplateEngine } from '@common/utils/templates/replace-templates-values';
@@ -492,6 +493,18 @@ export class ResolveProxyConfigService {
     ): ProtocolVariant | null {
         if (!inbound.settings) {
             return null;
+        }
+
+        // mtproto comes from our own Xray build, so xray-typed doesn't know it.
+        if ((inbound.protocol as string) === 'mtproto') {
+            const { domain } = inbound.settings as { domain?: string };
+
+            return domain
+                ? {
+                      protocol: 'mtproto',
+                      protocolOptions: { secret: getMtprotoLinkSecret(user, domain) },
+                  }
+                : null;
         }
 
         switch (inbound.protocol) {

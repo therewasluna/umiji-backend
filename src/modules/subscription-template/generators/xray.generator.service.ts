@@ -12,7 +12,7 @@ interface ShareLink {
     password: string;
     port: number;
     remark: string;
-    scheme: 'hysteria2' | 'ss' | 'trojan' | 'vless';
+    scheme: 'hysteria2' | 'ss' | 'tg' | 'trojan' | 'vless';
 }
 
 const LINK_TARGET_PREFIX = '$link.';
@@ -90,6 +90,15 @@ export class XrayGeneratorService {
                 return this.buildShadowsocksLink(host);
             case 'hysteria':
                 return this.buildHysteria2Link(host);
+            case 'mtproto':
+                return {
+                    scheme: 'tg',
+                    password: host.protocolOptions.secret,
+                    address: host.address,
+                    port: host.port,
+                    remark: host.finalRemark,
+                    params: {},
+                };
             default:
                 return null;
         }
@@ -492,6 +501,10 @@ export class XrayGeneratorService {
 
                 return `hysteria2://${encodeURIComponent(link.password)}@${address}:${link.port}/${queryPart}#${remark}`;
             }
+
+            // Telegram reads anything after # as part of the secret, so the name goes in a parameter it ignores.
+            case 'tg':
+                return `tg://proxy?server=${encodeURIComponent(link.address)}&port=${link.port}&secret=${link.password}&remark=${remark}`;
 
             default:
                 return `${link.scheme}://${encodeURIComponent(link.password)}@${address}:${link.port}?${query}#${remark}`;

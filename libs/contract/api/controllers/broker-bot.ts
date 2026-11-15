@@ -5,6 +5,7 @@ export const BROKER_BOT_ROUTES = {
     DISCONNECT: '',
     CONNECT: 'connect',
     UPDATE_SETTINGS: 'settings',
+    STATS: 'stats',
     PLANS: {
         CREATE: 'plans',
         UPDATE: 'plans',
@@ -25,6 +26,10 @@ export const BROKER_BOT_ROUTES = {
     BROADCASTS: {
         GET: 'broadcasts',
         CREATE: 'broadcasts',
+    },
+    TEXTS: {
+        GET: 'texts',
+        UPDATE: 'texts',
     },
     WEBHOOK: (brokerUuid: string) => `webhook/${brokerUuid}`,
 } as const;

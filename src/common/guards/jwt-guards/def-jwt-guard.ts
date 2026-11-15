@@ -3,7 +3,6 @@ import { QueryBus } from '@nestjs/cqrs';
 import { AuthGuard } from '@nestjs/passport';
 
 import { HttpExceptionWithErrorCodeType } from '@common/exception/http-exeception-with-error-code.type';
-import { RawCacheService } from '@common/raw-cache';
 import { TResult } from '@common/types';
 import {
     ERRORS,
@@ -22,10 +21,7 @@ import { GetBrokerByUuidQuery } from '@modules/brokers/queries/get-broker-by-uui
 
 @Injectable()
 export class JwtDefaultGuard extends AuthGuard('registeredUserJWT') {
-    constructor(
-        private readonly rawCacheService: RawCacheService,
-        private readonly queryBus: QueryBus,
-    ) {
+    constructor(private readonly queryBus: QueryBus) {
         super();
     }
 
@@ -119,6 +115,10 @@ export class JwtDefaultGuard extends AuthGuard('registeredUserJWT') {
             return false;
         }
 
+        if (broker.response.sessionVersion !== user.sessionVersion) {
+            return false;
+        }
+
         if (broker.response.isDisabled) {
             throw new HttpExceptionWithErrorCodeType(
                 ERRORS.BROKER_ACCOUNT_INACTIVE.message,
@@ -147,21 +147,12 @@ export class JwtDefaultGuard extends AuthGuard('registeredUserJWT') {
     }
 
     private async verifyApiToken(user: IJWTAuthPayload, apiTokenUuid: string): Promise<boolean> {
-        const cached = await this.rawCacheService.get<string[]>(`api:${apiTokenUuid}`, true);
-        if (cached) {
-            user.scopes = cached;
-            return true;
-        }
-
         const token = await this.getTokenByUuid({ uuid: apiTokenUuid });
         if (!token.isOk) {
             return false;
         }
 
-        const scopes = token.response.scopes ?? [];
-
-        await this.rawCacheService.set(`api:${apiTokenUuid}`, scopes, 3600);
-        user.scopes = scopes;
+        user.scopes = token.response.scopes ?? [];
         return true;
     }
 }

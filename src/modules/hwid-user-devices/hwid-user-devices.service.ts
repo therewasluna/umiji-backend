@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { QueryBus } from '@nestjs/cqrs';
+import { CommandBus, QueryBus } from '@nestjs/cqrs';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
 import { fail, ok, TResult } from '@common/types';
@@ -12,6 +12,7 @@ import { GetCachedExternalSquadSettingsQuery } from '@modules/external-squads/qu
 import { GetCachedSubscriptionSettingsQuery } from '@modules/subscription-settings/queries/get-cached-subscrtipion-settings';
 import { GetUserByUniqueFieldQuery } from '@modules/users/queries/get-user-by-unique-field';
 
+import { CreateWithAdvisoryLockCommand } from './commands/create-with-advisory-lock';
 import { CreateUserHwidDeviceBodyDto, GetHwidDevicesQueryDto } from './dtos';
 import { HwidUserDeviceEntity } from './entities/hwid-user-device.entity';
 import { GetHwidDevicesStatsResponseModel, GetTopUsersByHwidDevicesResponseModel } from './models';
@@ -24,6 +25,7 @@ export class HwidUserDevicesService {
     constructor(
         private readonly eventEmitter: EventEmitter2,
         private readonly hwidUserDevicesRepository: HwidUserDevicesRepository,
+        private readonly commandBus: CommandBus,
         private readonly queryBus: QueryBus,
     ) {}
 
@@ -44,15 +46,6 @@ export class HwidUserDevicesService {
 
             if (!user.isOk) {
                 return fail(ERRORS.USER_NOT_FOUND);
-            }
-
-            const isDeviceExists = await this.hwidUserDevicesRepository.checkHwidExists(
-                dto.hwid,
-                user.response.id,
-            );
-
-            if (isDeviceExists) {
-                return fail(ERRORS.USER_HWID_DEVICE_ALREADY_EXISTS);
             }
 
             let hwidSettings: THwidSettings | undefined;
@@ -79,28 +72,31 @@ export class HwidUserDevicesService {
                 }
             }
 
-            if (hwidSettings && hwidSettings.enabled) {
-                const count = await this.hwidUserDevicesRepository.countByUserId(user.response.id);
-
-                const deviceLimit =
-                    user.response.hwidDeviceLimit ?? hwidSettings.fallbackDeviceLimit;
-
-                if (count >= deviceLimit) {
-                    return fail(ERRORS.USER_HWID_DEVICE_LIMIT_REACHED);
-                }
-            }
-
-            const result = await this.hwidUserDevicesRepository.create(
-                new HwidUserDeviceEntity({
-                    hwid: dto.hwid,
-                    userId: user.response.id,
-                    platform: dto.platform,
-                    osVersion: dto.osVersion,
-                    deviceModel: dto.deviceModel,
-                    userAgent: dto.userAgent,
-                    requestIp: dto.requestIp,
-                }),
+            const deviceLimit = hwidSettings?.enabled
+                ? (user.response.hwidDeviceLimit ?? hwidSettings.fallbackDeviceLimit)
+                : 0;
+            const createResult = await this.commandBus.execute(
+                new CreateWithAdvisoryLockCommand(
+                    new HwidUserDeviceEntity({
+                        hwid: dto.hwid,
+                        userId: user.response.id,
+                        platform: dto.platform,
+                        osVersion: dto.osVersion,
+                        deviceModel: dto.deviceModel,
+                        userAgent: dto.userAgent,
+                        requestIp: dto.requestIp,
+                    }),
+                    deviceLimit,
+                ),
             );
+            if (!createResult.isOk) return fail(ERRORS.CREATE_HWID_USER_DEVICE_ERROR);
+            if (createResult.response.status === 'EXISTS') {
+                return fail(ERRORS.USER_HWID_DEVICE_ALREADY_EXISTS);
+            }
+            if (createResult.response.status === 'LIMIT_REACHED') {
+                return fail(ERRORS.USER_HWID_DEVICE_LIMIT_REACHED);
+            }
+            const result = createResult.response.hwidDevice;
 
             this.eventEmitter.emit(
                 EVENTS.USER_HWID_DEVICES.ADDED,

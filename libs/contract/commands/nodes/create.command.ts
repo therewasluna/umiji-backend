@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { NODES_ROUTES, REST_API } from '../../api';
 import { getEndpointDetails } from '../../constants';
-import { NodeIpsSchema } from '../../models';
+import { NodeIpsSchema, NodeProxyUrlSchema } from '../../models';
 import { NodeResponseSchema } from './node.response';
 export namespace CreateNodeCommand {
     export const url = REST_API.NODES.CREATE;
@@ -19,13 +19,7 @@ export namespace CreateNodeCommand {
         name: z.string().min(3).max(30),
         address: z.string().min(2),
         port: z.int().min(1).max(65535).optional(),
-        proxyUrl: z
-            .string()
-            .regex(
-                /^socks5:\/\/(?:[^:@/\s]+(?::[^@/\s]*)?@)?[^:@/\s]+:\d{1,5}$/,
-                'Expected socks5://[user:pass@]host:port',
-            )
-            .nullish(),
+        proxyUrl: NodeProxyUrlSchema.nullish(),
         isTrafficTrackingActive: z.boolean().optional().default(false),
         trafficLimitBytes: z.number().min(0).optional(),
         notifyPercent: z.int().min(0).max(100).optional(),
@@ -66,7 +60,6 @@ export namespace CreateNodeCommand {
                 .max(10, 'Maximum 10 tags'),
         ),
         activePluginUuid: z.optional(z.nullable(z.uuid())),
-        integrationUuids: z.optional(z.array(z.uuid()).max(20, 'Maximum 20 integrations')),
         note: z.optional(z.string().max(255, 'Note must be less than 255 characters')),
         ips: z.optional(NodeIpsSchema),
     });

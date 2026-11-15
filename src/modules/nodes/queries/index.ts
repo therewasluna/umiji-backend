@@ -10,7 +10,6 @@ import { GetNodesByPluginUuidHandler } from './get-nodes-by-plugin-uuid';
 import { GetNodesRecapHandler } from './get-nodes-recap';
 import { GetNodesSystemStatsHandler } from './get-nodes-system-stats';
 import { GetOnlineNodesHandler } from './get-online-nodes';
-import { GetProfileUuidsByIntegrationUuidHandler } from './get-profile-uuids-by-integration-uuid';
 
 export const QUERIES = [
     GetEnabledNodesHandler,
@@ -22,7 +21,6 @@ export const QUERIES = [
     FindNodesByCriteriaHandler,
     GetEnabledNodesPartialHandler,
     GetNodesByPluginUuidHandler,
-    GetProfileUuidsByIntegrationUuidHandler,
     GetNodeIdByUuidHandler,
     GetNodesRecapHandler,
     GetNodesSystemStatsHandler,

@@ -2,6 +2,7 @@ import { Brokers } from '@prisma/client';
 
 export class BrokerEntity implements Brokers {
     public uuid: string;
+    public sessionVersion: number;
     public trafficLimitBytes: bigint;
     public usedTrafficBytes: bigint;
     public usersLimit: number | null;

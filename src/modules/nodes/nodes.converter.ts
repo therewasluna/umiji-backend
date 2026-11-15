@@ -35,7 +35,6 @@ const entityToModel = (entity: NodesEntity): Nodes => {
         consumptionMultiplier: entity.consumptionMultiplier,
         nodeConsumptionMultiplier: entity.nodeConsumptionMultiplier,
         tags: entity.tags,
-        integrationUuids: entity.integrationUuids,
         ips: entity.ips,
 
         activeConfigProfileUuid: entity.activeConfigProfileUuid,

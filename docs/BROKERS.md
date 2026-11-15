@@ -5,13 +5,13 @@ the panel owner sets. Each broker can also run its own Telegram store bot.
 
 ## What a broker can do
 
-| Broker can | Broker can't |
-| --- | --- |
-| Create, edit, enable/disable, extend, reset, revoke and delete **its own** users, one by one or in bulk | See or touch users of the owner or other brokers |
+| Broker can                                                                                                                                        | Broker can't                                                                                       |
+| ------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Create, edit, enable/disable, extend, reset, revoke and delete **its own** users, one by one or in bulk                                           | See or touch users of the owner or other brokers                                                   |
 | Put users only in the internal squads the owner allowed, and see each squad's countries (servers online), protocols and the entries its users get | See nodes, hosts, config profiles, settings, panel statistics, API tokens, node names or addresses |
-| Brand its own subscription page, and edit its external squad's client settings, response headers and remarks | Change its squad's templates, host overrides, HWID settings or linked page |
-| See a Status page: its quota, users limit, expiry, user and online stats, users expiring soon or near their limit | Use "all users" bulk actions or the API with tokens (browser sign-in only) |
-| See its users' HWID devices and subscription request history, open users by ID (Quick open) | Raise its own limits |
+| Brand its own subscription page, and edit its external squad's client settings, response headers and remarks                                      | Change its squad's templates, host overrides, HWID settings or linked page                         |
+| See a Status page: its quota, users limit, expiry, user and online stats, users expiring soon or near their limit                                 | Use "all users" bulk actions or the API with tokens (browser sign-in only)                         |
+| See its users' HWID devices and subscription request history, open users by ID (Quick open)                                                       | Raise its own limits                                                                               |
 
 Limits the owner sets per broker (Management → Brokers):
 
@@ -26,11 +26,13 @@ Limits the owner sets per broker (Management → Brokers):
 - **Enable/disable** switch. A disabled broker can't sign in; its users keep working.
 - **Allowed internal squads**.
 
-Each broker also gets **its own external squad and subscription page config**, created with the broker
-and named after it (so broker usernames are limited to 30 characters and can't match an existing squad
-or page config name). Its users always use that squad. You can still set the squad's templates, host
-overrides and HWID settings on the External squads page. If you link the broker's page config to another
-squad as well, the broker can no longer edit it.
+Each broker also gets **its own external squad and subscription page config**, created with the broker and
+named after it (so broker usernames are limited to 30 letters, numbers and dashes, and can't match an existing
+squad or page config name. No underscores: the broker's users are named `<broker>_<name>`). Its users always
+use that squad. Of the squad's response headers, a broker can only set the ones subscription apps read:
+`profile-title`, `profile-web-page-url`, `profile-update-interval`, `support-url`, `routing` and `announce`.
+You can still set the squad's templates, host overrides and HWID settings on the External squads page. If you
+link the broker's page config to another squad as well, the broker can no longer edit it.
 
 The subscription page and your config editor show page icons and texts as raw HTML, so a broker's page
 config may only use plain SVG shapes, simple text formatting (`<b>`, `<i>`, `<br>`…, no attributes) and
@@ -49,10 +51,10 @@ Each broker can connect its own Telegram bot under **Telegram bot → Bot settin
 bot speaks English or Persian:
 
 - Customers open the bot, top up a wallet by card-to-card or crypto and send a receipt photo. Staff approve
-  or reject it in the broker's Telegram group (forum topics *Review Receipts* and *Logs*) or on the panel's
+  or reject it in the broker's Telegram group (forum topics _Review Receipts_ and _Logs_) or on the panel's
   **Orders** page.
 - With a balance, a customer buys a plan in one tap. The panel creates a user owned by the broker, on the
-  plan's internal squad, with the customer's Telegram ID, and sends the subscription link. *My subscriptions*
+  plan's internal squad, with the customer's Telegram ID, and sends the subscription link. _My subscriptions_
   shows usage, expiry and the connection links.
 - Plans (traffic, days, price in Toman, one internal squad), plan categories, payment cards and wallets, a
   channel button, mandatory channels, support tickets (a forum topic per customer), `/find` to discover the
@@ -67,6 +69,9 @@ bot speaks English or Persian:
   review topic set, fewer than 5 pending receipts). A receipt for money already sent is always kept for the
   **Orders** page. A purchase pays once even on a double tap, and if you change a plan while a customer is
   looking at it, they see the new terms before paying.
+- Wallet debit, user creation and order approval commit together. If an older purchase is still pending,
+  use **Recover purchase** on the Orders page to link its matching broker user, or **Refund purchase** when
+  no matching user exists.
 - **Bot broadcast** (Users menu → Bot broadcast, owner only): send a message and/or a photo to every customer of
   every connected broker bot. It goes out in the background through each broker's own bot (about 20 messages a
   second) and the page shows how many were sent and failed. Brokers see a notice that this can happen. If the
@@ -84,6 +89,9 @@ on or off only needs a restart. The domain must have a valid TLS certificate on 
 reachable from Telegram, so `TELEGRAM_BOT_PROXY` doesn't help here. In nginx only `/api/broker-bot/webhook/`
 needs to be open on that domain; keep it out of any cookie or IP protection the panel has, and allow it in
 Cloudflare's WAF. Each call carries a secret header derived from `APP_SECRET` and the bot token, and wrong ones
-get 401. Telegram sends one update at a time per bot, and a resent update is handled once. Bot tokens are stored encrypted with `APP_SECRET`; changing `APP_SECRET` means brokers have to
-save their token again. A token can run in one place only: connecting it here replaces any webhook, so stop
-any other app using that token first.
+get 401. Incoming updates are saved in PostgreSQL before they are acknowledged, and failed work is retried.
+Top-up receipts use the Telegram update ID to avoid duplicate orders. Keep `API_INSTANCES` at 1 in webhook
+mode: each instance handles a bot's updates on its own, so with more than one, two customers claiming at the same
+moment can both get past the trial's daily limit. Bot tokens are stored encrypted with
+`APP_SECRET`; changing `APP_SECRET` means brokers have to save their token again. A token can run in one place
+only: connecting it here replaces any webhook, so stop any other app using that token first.

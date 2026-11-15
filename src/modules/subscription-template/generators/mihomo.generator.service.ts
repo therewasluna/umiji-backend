@@ -144,8 +144,7 @@ export class MihomoGeneratorService {
 
             const yamlConfig = yamlConfigDb as Record<string, unknown>;
             const includeHidden =
-                (yamlConfig.umiji as UmijiRootConfig | undefined)?.includeHiddenHosts ??
-                false;
+                (yamlConfig.umiji as UmijiRootConfig | undefined)?.includeHiddenHosts ?? false;
 
             const data: MihomoData = { proxies: [], rules: [] };
             const proxyRemarks: string[] = [];

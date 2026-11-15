@@ -91,6 +91,10 @@ export const HysteriaTransportOptionsSchema = z.object({
     auth: z.string(),
 });
 
+export const MtprotoProtocolOptionsSchema = z.object({
+    secret: z.string(),
+});
+
 export const TlsSecurityOptionsSchema = z.object({
     pinnedPeerCertSha256: z.string().nullable(),
     verifyPeerCertByName: z.string().nullable(),
@@ -133,11 +137,17 @@ const HysteriaProtocolSchema = z.object({
     protocolOptions: HysteriaProtocolOptionsSchema,
 });
 
+const MtprotoProtocolSchema = z.object({
+    protocol: z.literal('mtproto'),
+    protocolOptions: MtprotoProtocolOptionsSchema,
+});
+
 export const ProtocolVariantSchema = z.discriminatedUnion('protocol', [
     VlessProtocolSchema.meta({ title: 'vless' }),
     TrojanProtocolSchema.meta({ title: 'trojan' }),
     ShadowsocksProtocolSchema.meta({ title: 'shadowsocks' }),
     HysteriaProtocolSchema.meta({ title: 'hysteria' }),
+    MtprotoProtocolSchema.meta({ title: 'mtproto' }),
 ]);
 
 const TcpTransportSchema = z.object({

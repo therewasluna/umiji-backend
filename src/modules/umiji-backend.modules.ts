@@ -17,20 +17,20 @@ import { InfraBillingModule } from './infra-billing/infra-billing.module';
 import { InternalSquadModule } from './internal-squads/internal-squad.module';
 import { KeygenModule } from './keygen/keygen.module';
 import { MetadataModule } from './metadata/metadata.module';
-import { NodeIntegrationModule } from './node-integrations';
+import { NodeInstallModule } from './node-install/node-install.module';
 import { NodePluginModule } from './node-plugins';
 import { NodeSshModule } from './node-ssh/node-ssh.module';
 import { NodesUsageHistoryModule } from './nodes-usage-history/nodes-usage-history.module';
 import { NodesUserUsageHistoryModule } from './nodes-user-usage-history/nodes-user-usage-history.module';
 import { NodesModule } from './nodes/nodes.module';
-import { UmijiServiceModule } from './umiji-service/umiji-service.module';
-import { UmijiSettingsModule } from './umiji-settings/umiji-settings.module';
 import { SubscriptionPageConfigModule } from './subscription-page-configs/subpage-configs.module';
 import { SubscriptionResponseRulesModule } from './subscription-response-rules/subscription-response-rules.module';
 import { SubscriptionSettingsModule } from './subscription-settings/subscription-settings.module';
 import { SubscriptionTemplateModule } from './subscription-template/subscription-template.module';
 import { SubscriptionModule } from './subscription/subscription.module';
 import { SystemModule } from './system/system.module';
+import { UmijiServiceModule } from './umiji-service/umiji-service.module';
+import { UmijiSettingsModule } from './umiji-settings/umiji-settings.module';
 import { UserSubscriptionRequestHistoryModule } from './user-subscription-request-history/user-subscription-request-history.module';
 import { UsersModule } from './users/users.module';
 
@@ -51,8 +51,8 @@ import { UsersModule } from './users/users.module';
         ExternalSquadModule,
         KeygenModule,
         NodesModule,
+        NodeInstallModule,
         NodePluginModule,
-        NodeIntegrationModule,
         HostsModule,
         NodesUserUsageHistoryModule,
         HwidUserDevicesModule,

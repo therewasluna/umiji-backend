@@ -12,4 +12,5 @@ export const SUBSCRIPTIONS_ROUTES = {
         GET_CONFIG: (shortUuid: string) => `subpage-config/${shortUuid}`,
     },
     GET_CONNECTION_KEYS_BY_USER_ID: (userId: string) => `connection-keys/${userId}`,
+    GET_TELEGRAM_LINKS_BY_USER_ID: (userId: string) => `telegram-links/${userId}`,
 } as const;

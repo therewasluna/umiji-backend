@@ -2,7 +2,11 @@ import { z } from 'zod';
 
 import { BROKER_BOT_ROUTES, REST_API } from '../../api';
 import { getEndpointDetails } from '../../constants';
-import { BROKER_BOT_MAX_TOMAN, BrokerBotResponseSchema } from './broker-bot.response';
+import {
+    BROKER_BOT_MAX_TOMAN,
+    BrokerBotResponseSchema,
+    BrokerBotSquadUuidsSchema,
+} from './broker-bot.response';
 
 export namespace CreateBrokerBotPlanCommand {
     export const url = REST_API.BROKER_BOT.PLANS.CREATE;
@@ -20,7 +24,8 @@ export namespace CreateBrokerBotPlanCommand {
         trafficGb: z.number().min(0, 'Traffic must be ≥ 0.').max(1_000_000),
         durationDays: z.int().min(1, 'Duration must be at least 1 day.').max(3650),
         price: z.int().min(0, 'Price must be ≥ 0.').max(BROKER_BOT_MAX_TOMAN),
-        squadUuid: z.uuid(),
+        squadUuids: BrokerBotSquadUuidsSchema,
+        ipLimit: z.int().min(1).max(100).nullish(),
         categoryId: z.nullable(z.int()),
     });
 

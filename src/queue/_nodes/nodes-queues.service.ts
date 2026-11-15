@@ -366,6 +366,15 @@ export class NodesQueuesService implements OnApplicationBootstrap {
         );
     }
 
+    public async syncIpLimits() {
+        // One sweep at a time: the job id dedupes while one is waiting or running.
+        return this.queryNodesQueue.add(
+            NODES_JOB_NAMES.SYNC_IP_LIMITS,
+            {},
+            { jobId: NODES_JOB_NAMES.SYNC_IP_LIMITS, removeOnComplete: true, removeOnFail: true },
+        );
+    }
+
     public async dropUsersConnections(payload: IDropUsersConnectionsPayload) {
         return this.nodeBulkUsersQueue.add(NODES_JOB_NAMES.DROP_USERS_CONNECTIONS, payload);
     }

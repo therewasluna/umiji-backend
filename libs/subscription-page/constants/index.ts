@@ -1,3 +1,4 @@
+export * from './accent-colors.constant';
 export * from './app-config.constant';
 export * from './base-translations.constant';
 export * from './button-types.constant';

@@ -5,6 +5,14 @@ import { PartialInfraProviderSchema } from './infra-provider.schema';
 import { NodeIpsSchema } from './node-ips.schema';
 import { NodeSystemSchema } from './node-system.schema';
 
+/** Panel-to-node API proxy. A loopback host means the panel's own server (reached from Docker too). */
+export const NodeProxyUrlSchema = z
+    .string()
+    .regex(
+        /^(?:socks5h?|http):\/\/(?:[^:@/\s]+(?::[^@/\s]*)?@)?[^:@/\s]+:\d{1,5}\/?$/,
+        'Expected socks5://[user:pass@]host:port or http://[user:pass@]host:port',
+    );
+
 export const NodesSchema = z.object({
     uuid: z.uuid(),
     id: z.number(),
@@ -27,7 +35,6 @@ export const NodesSchema = z.object({
     consumptionMultiplier: z.number(),
     nodeConsumptionMultiplier: z.number(),
     tags: z.array(z.string()),
-    integrationUuids: z.array(z.uuid()),
     ips: NodeIpsSchema,
 
     createdAt: z.iso.datetime().transform((str) => new Date(str)),

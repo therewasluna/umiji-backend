@@ -10,10 +10,7 @@ import { HttpExceptionFilter } from '@common/exception/http-exception.filter';
 import { JwtDefaultGuard } from '@common/guards/jwt-guards/def-jwt-guard';
 import { RolesGuard } from '@common/guards/roles';
 import { errorHandler } from '@common/helpers/error-handler.helper';
-import {
-    GetUmijiSettingsCommand,
-    UpdateUmijiSettingsCommand,
-} from '@libs/contracts/commands';
+import { GetUmijiSettingsCommand, UpdateUmijiSettingsCommand } from '@libs/contracts/commands';
 
 import {
     GetUmijiSettingsResponseDto,

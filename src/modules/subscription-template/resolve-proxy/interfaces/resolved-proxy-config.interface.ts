@@ -115,11 +115,17 @@ export type HysteriaProtocol = {
     protocolOptions: IHysteriaProtocolOptions;
 };
 
+export type MtprotoProtocol = {
+    protocol: 'mtproto';
+    protocolOptions: { secret: string };
+};
+
 export type ProtocolVariant =
     | VlessProtocol
     | TrojanProtocol
     | ShadowsocksProtocol
-    | HysteriaProtocol;
+    | HysteriaProtocol
+    | MtprotoProtocol;
 
 // ─── Transport Variants ──────────────────────────────────
 

@@ -129,6 +129,24 @@ export class UsersRepository {
         };
     }
 
+    public async findUserByIdInTransaction(id: bigint): Promise<UserEntity | null> {
+        const user = await this.prisma.tx.users.findUnique({
+            where: { id },
+            include: {
+                traffic: true,
+                activeInternalSquads: {
+                    include: { internalSquad: { select: { uuid: true, name: true } } },
+                },
+            },
+        });
+        if (!user?.traffic) return null;
+        return new UserEntity({
+            ...new BaseUserEntity(user),
+            ...user.traffic,
+            activeInternalSquads: user.activeInternalSquads.map((member) => member.internalSquad),
+        });
+    }
+
     @Transactional()
     public async bulkIncrementUsedTraffic(
         userUsageList: { u: string; b: string; n: string }[],
@@ -511,11 +529,19 @@ export class UsersRepository {
         });
 
         if (activeInternalSquads) {
-            await this.removeUserFromInternalSquads(id);
-            await this.addUserToInternalSquads(id, activeInternalSquads);
+            await this.prisma.tx.internalSquadMembers.deleteMany({ where: { userId: id } });
+            if (activeInternalSquads.length) {
+                await this.prisma.tx.internalSquadMembers.createMany({
+                    data: activeInternalSquads.map((internalSquadUuid) => ({
+                        userId: id,
+                        internalSquadUuid,
+                    })),
+                    skipDuplicates: true,
+                });
+            }
         }
 
-        return await this.findUniqueByCriteria({ id }, { activeInternalSquads: true });
+        return this.findUserByIdInTransaction(id);
     }
 
     public async updateUserStatus(id: bigint, status: TUsersStatus): Promise<boolean> {
@@ -830,6 +856,8 @@ export class UsersRepository {
                     'users.trojanPassword',
                     'users.vlessUuid',
                     'users.ssPassword',
+                    'users.mtprotoSecret',
+                    'users.mtprotoAdTag',
                     sql<
                         string[]
                     >`coalesce(json_agg(DISTINCT ${eb.ref('configProfileInbounds.tag')}), '[]')`.as(
@@ -1194,6 +1222,32 @@ export class UsersRepository {
             .execute();
     }
 
+    @Transactional()
+    public async replaceUsersInternalSquads(
+        usersIds: bigint[],
+        internalSquadsUuids: string[],
+    ): Promise<void> {
+        if (usersIds.length === 0) return;
+        const squads = [...new Set(internalSquadsUuids)];
+        if (squads.length) {
+            const existing = await this.prisma.tx.internalSquads.count({
+                where: { uuid: { in: squads } },
+            });
+            if (existing !== squads.length) throw new Error('Unknown internal squad UUID');
+        }
+
+        await this.prisma.tx.internalSquadMembers.deleteMany({
+            where: { userId: { in: usersIds } },
+        });
+        if (squads.length) {
+            await this.prisma.tx.internalSquadMembers.createMany({
+                data: usersIds.flatMap((userId) =>
+                    squads.map((internalSquadUuid) => ({ userId, internalSquadUuid })),
+                ),
+            });
+        }
+    }
+
     public async validateUserIds(userIds: number[] | bigint[]): Promise<bigint[]> {
         const result = await this.qb.kysely
             .selectFrom('users')
@@ -1312,6 +1366,7 @@ export class UsersRepository {
             | 'trojanPassword'
             | 'vlessUuid'
             | 'ssPassword'
+            | 'mtprotoSecret'
             | 'subRevokedAt'
             | 'shortUuid'
             | 'updatedAt'
@@ -1324,6 +1379,7 @@ export class UsersRepository {
                 trojanPassword: dto.trojanPassword,
                 vlessUuid: getKyselyUuid(dto.vlessUuid),
                 ssPassword: dto.ssPassword,
+                mtprotoSecret: dto.mtprotoSecret,
                 shortUuid: dto.shortUuid,
                 updatedAt: dto.updatedAt,
             })
@@ -1343,6 +1399,8 @@ export class UsersRepository {
                 'users.trojanPassword',
                 'users.vlessUuid',
                 'users.ssPassword',
+                'users.mtprotoSecret',
+                'users.mtprotoAdTag',
                 jsonArrayFrom(
                     eb
                         .selectFrom('internalSquadMembers')
@@ -1396,6 +1454,8 @@ export class UsersRepository {
                 'users.trojanPassword',
                 'users.vlessUuid',
                 'users.ssPassword',
+                'users.mtprotoSecret',
+                'users.mtprotoAdTag',
                 jsonArrayFrom(
                     eb
                         .selectFrom('internalSquadMembers')
@@ -1522,6 +1582,17 @@ export class UsersRepository {
                 .select(['internalSquads.uuid', 'internalSquads.name'])
                 .whereRef('internalSquadMembers.userId', '=', 'users.id'),
         ).as('activeInternalSquads');
+    }
+
+    public async findIpLimitedUsers(): Promise<{ id: bigint; ipLimit: number }[]> {
+        const result = await this.qb.kysely
+            .selectFrom('users')
+            .select(['id', 'ipLimit'])
+            .where('status', '=', 'ACTIVE')
+            .where('ipLimit', 'is not', null)
+            .execute();
+
+        return result.map(({ id, ipLimit }) => ({ id: BigInt(id), ipLimit: ipLimit! }));
     }
 
     public async findNotConnectedUsers(startDate: Date, endDate: Date): Promise<UserEntity[]> {

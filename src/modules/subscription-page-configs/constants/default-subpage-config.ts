@@ -5,6 +5,7 @@ export const DEFAULT_SUBPAGE_CONFIG = {
         title: 'Subscription',
         logoUrl: 'https://raw.githubusercontent.com/therewasluna/umiji/main/assets/logo.svg',
         supportUrl: 'https://example.com',
+        accentColor: 'rose',
     },
     uiConfig: {
         subscriptionInfoBlockType: 'expanded',
@@ -133,7 +134,7 @@ export const DEFAULT_SUBPAGE_CONFIG = {
             en: 'Expires',
             ru: 'Истекает',
             fr: 'Expire',
-            fa: 'منقضی می‌شود در',
+            fa: 'منقضی می‌شود',
             zh: '后到期',
         },
         expired: {

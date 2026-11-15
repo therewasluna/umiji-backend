@@ -1,3 +1,4 @@
+import { getMtprotoSecret } from '@common/helpers/xray-config/mtproto-secret';
 import { TResetPeriods, TUsersStatus } from '@libs/contracts/constants';
 
 import { InternalSquadEntity } from '@modules/internal-squads/entities';
@@ -22,12 +23,15 @@ export class GetFullUserResponseModel {
     public readonly tag: null | string;
 
     public readonly hwidDeviceLimit: number | null;
+    public readonly ipLimit: number | null;
     public readonly externalSquadUuid: string | null;
     public readonly brokerUuid: string | null;
 
     public readonly trojanPassword: string;
     public readonly vlessUuid: string;
     public readonly ssPassword: string;
+    public readonly mtprotoSecret: string;
+    public readonly mtprotoAdTag: null | string;
 
     public readonly lastTriggeredThreshold: number;
     public readonly subRevokedAt: Date | null;
@@ -67,12 +71,15 @@ export class GetFullUserResponseModel {
         this.tag = entity.tag;
 
         this.hwidDeviceLimit = entity.hwidDeviceLimit;
+        this.ipLimit = entity.ipLimit;
         this.externalSquadUuid = entity.externalSquadUuid;
         this.brokerUuid = entity.brokerUuid;
 
         this.trojanPassword = entity.trojanPassword;
         this.vlessUuid = entity.vlessUuid;
         this.ssPassword = entity.ssPassword;
+        this.mtprotoSecret = getMtprotoSecret(entity);
+        this.mtprotoAdTag = entity.mtprotoAdTag;
 
         this.lastTriggeredThreshold = entity.lastTriggeredThreshold;
         this.subRevokedAt = entity.subRevokedAt;

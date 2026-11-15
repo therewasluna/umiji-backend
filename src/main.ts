@@ -12,6 +12,7 @@ import timezone from 'dayjs/plugin/timezone';
 import utc from 'dayjs/plugin/utc';
 import { json, NextFunction, Request, Response } from 'express';
 import helmet from 'helmet';
+import { verify } from 'jsonwebtoken';
 import morgan from 'morgan';
 import { utilities as nestWinstonModuleUtilities, WinstonModule } from 'nest-winston';
 import { ZodValidationPipe } from 'nestjs-zod';
@@ -28,6 +29,7 @@ import {
     noRobotsMiddleware,
     toolsAuthMiddleware,
 } from '@common/middlewares';
+import { RawCacheService } from '@common/raw-cache';
 import { customLogFilter } from '@common/utils/filter-logs';
 import { getDocs, isDevelopment, isDevOrDebugLogsEnabled } from '@common/utils/startup-app';
 
@@ -77,9 +79,26 @@ async function bootstrap(): Promise<void> {
 
     app.disable('x-powered-by');
 
-    app.use(json({ limit: '100mb' }));
-
     const config = app.get(TypedConfigService);
+
+    // Bodies are parsed before any guard runs, so only a request with a valid panel token may send a
+    // big one (configs, broadcast images). Login, the bot webhook and strangers get 1 MB.
+    const appSecret = config.getOrThrow('APP_SECRET');
+    const bigJson = json({ limit: '100mb' });
+    const smallJson = json({ limit: '1mb' });
+    const hasValidToken = (req: Request): boolean => {
+        const token = req.headers.authorization?.match(/^bearer\s+(\S+)/i)?.[1];
+        if (!token) return false;
+        try {
+            verify(token, appSecret);
+            return true;
+        } catch {
+            return false;
+        }
+    };
+    app.use((req: Request, res: Response, next: NextFunction) =>
+        (hasValidToken(req) ? bigJson : smallJson)(req, res, next),
+    );
 
     const helmetMiddleware = helmet({
         contentSecurityPolicy: {
@@ -98,7 +117,10 @@ async function bootstrap(): Promise<void> {
     const isBackendToolsRequest = (req: Request): boolean =>
         req.path.toLowerCase().startsWith(backendToolsPath);
 
-    app.use(backendToolsPath, toolsAuthMiddleware(config.getOrThrow('APP_SECRET')));
+    app.use(
+        backendToolsPath,
+        toolsAuthMiddleware(config.getOrThrow('APP_SECRET'), app.get(RawCacheService)),
+    );
 
     if (!isDevelopment()) {
         app.use((req: Request, res: Response, next: NextFunction) => {
@@ -110,9 +132,14 @@ async function bootstrap(): Promise<void> {
     }
 
     if (config.getOrThrow('IS_HTTP_LOGGING_ENABLED')) {
+        morgan.token('safe-url', (req: Request) => {
+            const url = new URL(req.originalUrl, 'http://localhost');
+            if (url.searchParams.has('ott')) url.searchParams.set('ott', '[redacted]');
+            return `${url.pathname}${url.search}`;
+        });
         app.use(
             morgan(
-                ':remote-addr - ":method :url HTTP/:http-version" :status :res[content-length] ":referrer" ":user-agent"',
+                ':remote-addr - ":method :safe-url HTTP/:http-version" :status :res[content-length] ":referrer" ":user-agent"',
                 // {
                 //     skip: (req) => req.url === ROOT + METRICS_ROOT,
                 //     stream: {

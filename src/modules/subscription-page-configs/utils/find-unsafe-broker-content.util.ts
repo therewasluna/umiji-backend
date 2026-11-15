@@ -25,6 +25,7 @@ const SVG_TAGS = new Set([
     'tspan',
 ]);
 
+// No style or overflow: either lets an icon draw outside its box, e.g. a fake sign-in box.
 const SVG_ATTRIBUTES = new Set([
     'aria-hidden',
     'class',
@@ -58,7 +59,6 @@ const SVG_ATTRIBUTES = new Set([
     'maskunits',
     'offset',
     'opacity',
-    'overflow',
     'points',
     'preserveaspectratio',
     'r',
@@ -77,7 +77,6 @@ const SVG_ATTRIBUTES = new Set([
     'stroke-miterlimit',
     'stroke-opacity',
     'stroke-width',
-    'style',
     'text-anchor',
     'transform',
     'version',

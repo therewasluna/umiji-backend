@@ -8,16 +8,19 @@ import { QueryBus } from '@nestjs/cqrs';
 import { AxiosService } from '@common/axios/axios.service';
 import { TypedConfigService } from '@common/config/app-config';
 import { RawCacheService } from '@common/raw-cache';
-import { EXPORT_TO_STREAM_KEYS } from '@libs/contracts/constants';
+import { EXPORT_TO_STREAM_KEYS, INTERNAL_CACHE_KEYS } from '@libs/contracts/constants';
 import { NODE_CONNECTIONS_STREAM_MESSAGE_VERSION } from '@libs/contracts/models';
 
 import { NodesEntity } from '@modules/nodes';
 import { FindNodesByCriteriaQuery } from '@modules/nodes/queries/find-nodes-by-criteria';
 import { GetNodeByUuidQuery } from '@modules/nodes/queries/get-node-by-uuid';
+import { GetOnlineNodesQuery } from '@modules/nodes/queries/get-online-nodes';
+import { GetIpLimitedUsersQuery } from '@modules/users/queries/get-ip-limited-users';
 
 import { QUEUES_NAMES } from '../../queue.enum';
 import { NODES_JOB_NAMES } from '../constants';
 import { IGeocheckJobResult, IGeocheckPayload, IGetIpsListResult } from '../interfaces';
+import { pickAdmittedIps, slotKey } from './pick-admitted-ips';
 
 @Processor(
     {
@@ -33,6 +36,8 @@ export class QueryNodesQueueProcessor extends WorkerHost implements OnApplicatio
     private readonly logger = new Logger(QueryNodesQueueProcessor.name);
     private readonly CONCURRENCY: number;
     private readonly exportToStreamEnabled: boolean;
+    // Nodes already warned about not applying IP limits, so an old node doesn't log every 30s.
+    private readonly ipLimitsWarnedNodes = new Set<string>();
 
     constructor(
         private readonly axios: AxiosService,
@@ -64,6 +69,8 @@ export class QueryNodesQueueProcessor extends WorkerHost implements OnApplicatio
                 return await this.handleGeocheckByNode(job);
             case NODES_JOB_NAMES.EXPORT_NODE_CONNECTIONS:
                 return await this.handleExportNodeConnectionsJob(job);
+            case NODES_JOB_NAMES.SYNC_IP_LIMITS:
+                return await this.handleSyncIpLimits();
             default:
                 this.logger.warn(`Job "${job.name}" is not handled.`);
                 break;
@@ -266,6 +273,91 @@ export class QueryNodesQueueProcessor extends WorkerHost implements OnApplicatio
             this.logger.error(`Failed to fetch geocheck for node ${nodeUuid}: ${error}`);
 
             return failed(error instanceof Error ? error.message : String(error));
+        }
+    }
+
+    /**
+     * Reads every node's online IPs, picks which ones keep each limited user's slots, and sends
+     * every node the whole table. A node that can't be read isn't sent anything: its last table
+     * stays and its cross-node list expires on its own, so failures only loosen limits.
+     */
+    private async handleSyncIpLimits(): Promise<void> {
+        try {
+            const limitedResult = await this.queryBus.execute(new GetIpLimitedUsersQuery());
+            if (!limitedResult.isOk) return;
+            const limited = limitedResult.response;
+
+            const previous = await this.rawCacheService.get<Record<string, string[]>>(
+                INTERNAL_CACHE_KEYS.IP_LIMITS_ADMITTED,
+            );
+            // Nothing limited now or last run. Otherwise one empty table clears the nodes.
+            if (limited.length === 0 && previous === null) return;
+
+            const nodesResult = await this.queryBus.execute(new GetOnlineNodesQuery());
+            if (!nodesResult.isOk) return;
+
+            const limitedIds = new Set(limited.map(({ id }) => id.toString()));
+            const seen = new Map<string, Map<string, number>>();
+            const readable: typeof nodesResult.response = [];
+
+            await pMap(
+                nodesResult.response,
+                async (node) => {
+                    const result = await this.axios.getUsersIpsList(node.connectionOpts);
+                    if (!result.isOk) return;
+                    readable.push(node);
+
+                    for (const user of result.response.users) {
+                        if (!limitedIds.has(user.userId)) continue;
+                        let ips = seen.get(user.userId);
+                        if (!ips) seen.set(user.userId, (ips = new Map()));
+                        for (const { ip, lastSeen } of user.ips) {
+                            const at = new Date(lastSeen).getTime();
+                            const slot = slotKey(ip);
+                            ips.set(slot, Math.min(ips.get(slot) ?? at, at));
+                        }
+                    }
+                },
+                { concurrency: this.CONCURRENCY },
+            );
+
+            const admitted: Record<string, string[]> = {};
+            const users = limited.map(({ id, ipLimit }) => {
+                const username = id.toString();
+                const ips = pickAdmittedIps(
+                    ipLimit,
+                    seen.get(username) ?? new Map(),
+                    previous?.[username],
+                );
+                if (ips.length > 0) admitted[username] = ips;
+                return { username, limit: ipLimit, ips };
+            });
+
+            if (limited.length === 0) {
+                await this.rawCacheService.del(INTERNAL_CACHE_KEYS.IP_LIMITS_ADMITTED);
+            } else {
+                await this.rawCacheService.set(INTERNAL_CACHE_KEYS.IP_LIMITS_ADMITTED, admitted);
+            }
+
+            await pMap(
+                readable,
+                async (node) => {
+                    const result = await this.axios.syncIpLimits({ users }, node.connectionOpts);
+                    const applied = result.isOk && result.response.success;
+
+                    if (applied) {
+                        this.ipLimitsWarnedNodes.delete(node.uuid);
+                    } else if (!this.ipLimitsWarnedNodes.has(node.uuid)) {
+                        this.ipLimitsWarnedNodes.add(node.uuid);
+                        this.logger.warn(
+                            `Node ${node.uuid} did not apply IP limits (outdated node or Xray core): ${result.isOk ? 'core refused' : result.message}`,
+                        );
+                    }
+                },
+                { concurrency: this.CONCURRENCY },
+            );
+        } catch (error) {
+            this.logger.error(`Failed to sync IP limits: ${error}`);
         }
     }
 

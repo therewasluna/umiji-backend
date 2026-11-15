@@ -70,6 +70,7 @@ cleanup() {
   [[ -z $EXT || $EXT == null ]] || cleanup_delete "/api/external-squads/$EXT" 204
   [[ -z $CFG || $CFG == null ]] || cleanup_delete "/api/subscription-page-configs/$CFG" 204
   [[ -z $SQUAD || $SQUAD == null ]] || cleanup_delete "/api/internal-squads/$SQUAD" 204
+  [[ -z $SQUAD2 || $SQUAD2 == null ]] || cleanup_delete "/api/internal-squads/$SQUAD2" 204
   if [[ -n $MOCK_PID ]]; then
     kill "$MOCK_PID" 2>/dev/null
     wait "$MOCK_PID" 2>/dev/null
@@ -166,7 +167,9 @@ check 'admin login token' '.response.accessToken | type=="string"'
 ADMIN=$(jqb .response.accessToken)
 expect 'create squad' 201 POST /api/internal-squads "$ADMIN" "{\"name\":\"sq$RUN\",\"inbounds\":[]}"
 SQUAD=$(jqb .response.uuid)
-expect 'create broker' 201 POST /api/brokers "$ADMIN" "{\"username\":\"$NAME\",\"password\":\"BrokerPassword123456789abc\",\"internalSquads\":[\"$SQUAD\"]}"
+expect 'create second squad' 201 POST /api/internal-squads "$ADMIN" "{\"name\":\"sq2$RUN\",\"inbounds\":[]}"
+SQUAD2=$(jqb .response.uuid)
+expect 'create broker' 201 POST /api/brokers "$ADMIN" "{\"username\":\"$NAME\",\"password\":\"BrokerPassword123456789abc\",\"internalSquads\":[\"$SQUAD\",\"$SQUAD2\"]}"
 BRK=$(jqb .response.uuid); EXT=$(jqb .response.externalSquad.uuid)
 expect 'broker login' 200 POST /api/auth/login '' "{\"username\":\"$NAME\",\"password\":\"BrokerPassword123456789abc\"}"
 check 'broker login token' '.response.accessToken | type=="string"'
@@ -193,21 +196,24 @@ mark
 expect 'connect staff group' 200 POST /api/broker-bot/connect "$BT" '{"groupId":"-100123","lang":"en","greeting":null}'
 check 'topics ready' '.response | .isConnected and .topicsReady and .groupId=="-100123"'
 read_calls
-check 'exactly two staff topics' '[.calls[] | select(.method=="createForumTopic") | .body | {chat_id,name}] | sort_by(.name)==[{chat_id:"-100123",name:"Logs"},{chat_id:"-100123",name:"Review Receipts"}]' "$CALLS"
+check 'exactly two staff topics' '[.calls[] | select(.method=="createForumTopic") | .body | {chat_id,name}] | sort_by(.name)==[{chat_id:"-100123",name:"Review Receipts"},{chat_id:"-100123",name:"Stats"}]' "$CALLS"
 REVIEW=$(jq -r '.calls[] | select(.method=="createForumTopic" and .body.name=="Review Receipts") | .result.message_thread_id' "$CALLS")
+STATS_TOPIC=$(jq -r '.calls[] | select(.method=="createForumTopic" and .body.name=="Stats") | .result.message_thread_id' "$CALLS")
 check 'both topic headers pinned' '[.calls[]|select(.method=="pinChatMessage" and .body.chat_id=="-100123")]|length==2' "$CALLS"
 
 echo '== settings and catalog'
-SETTINGS='{"cards":[{"cardNumber":"6037991234567890","holderName":"E2E Store"}],"wallets":[{"asset":"USDT","address":"e2e-wallet-address"}],"channelUrl":"https://t.me/e2e_store","requiredChannels":[{"chatRef":"@e2e_required","title":"Required channel","url":"https://t.me/e2e_required"}]}'
+SETTINGS='{"cards":[{"cardNumber":"6037991234567890","holderName":"E2E Store"}],"wallets":[{"asset":"USDT","address":"e2e-wallet-address"}],"payMethods":[{"method":"PayPal","account":"e2e@paypal.test","note":"1 USD = 100,000 Toman"}],"channelUrl":"https://t.me/e2e_store","requiredChannels":[{"chatRef":"@e2e_required","title":"Required channel","url":"https://t.me/e2e_required"}]}'
 expect 'save payment and channel settings' 200 PATCH /api/broker-bot/settings "$BT" "$SETTINGS"
-check 'settings round trip' ".response | {cards,wallets,channelUrl,requiredChannels} == $SETTINGS"
+check 'settings round trip' ".response | {cards,wallets,payMethods,channelUrl,requiredChannels} == $SETTINGS"
 expect 'create category' 201 POST /api/broker-bot/categories "$BT" '{"title":"Monthly"}'
 CAT=$(jqb '.response.categories[] | select(.title=="Monthly") | .id')
-expect 'create categorized plan' 201 POST /api/broker-bot/plans "$BT" "{\"title\":\"Basic\",\"trafficGb\":1,\"durationDays\":30,\"price\":10000,\"squadUuid\":\"$SQUAD\",\"categoryId\":$CAT}"
+expect 'create categorized plan' 201 POST /api/broker-bot/plans "$BT" "{\"title\":\"Basic\",\"trafficGb\":1,\"durationDays\":30,\"price\":10000,\"ipLimit\":2,\"squadUuids\":[\"$SQUAD\",\"$SQUAD2\"],\"categoryId\":$CAT}"
 PLAN=$(jqb '.response.plans[] | select(.title=="Basic") | .id')
-expect 'create expensive uncategorized plan' 201 POST /api/broker-bot/plans "$BT" "{\"title\":\"Expensive\",\"trafficGb\":2,\"durationDays\":30,\"price\":90000,\"squadUuid\":\"$SQUAD\",\"categoryId\":null}"
+expect 'create expensive uncategorized plan' 201 POST /api/broker-bot/plans "$BT" "{\"title\":\"Expensive\",\"trafficGb\":2,\"durationDays\":30,\"price\":90000,\"squadUuids\":[\"$SQUAD\"],\"categoryId\":null}"
 EXPENSIVE=$(jqb '.response.plans[] | select(.title=="Expensive") | .id')
-check 'catalog contains both plans' ".response.plans | length==2 and any(.[];.id==$PLAN and .categoryId==$CAT and .price==10000) and any(.[];.id==$EXPENSIVE and .categoryId==null and .price==90000)"
+check 'catalog contains both plans' ".response.plans | length==2 and any(.[];.id==$PLAN and .categoryId==$CAT and .price==10000 and .ipLimit==2) and any(.[];.id==$EXPENSIVE and .categoryId==null and .price==90000 and .ipLimit==null)"
+expect 'plan with a squad the broker lacks rejected' 400 POST /api/broker-bot/plans "$BT" "{\"title\":\"Bad\",\"trafficGb\":1,\"durationDays\":30,\"price\":1,\"squadUuids\":[\"$SQUAD\",\"00000000-0000-4000-8000-000000000000\"],\"categoryId\":null}"
+expect 'plan with a repeated squad rejected' 400 POST /api/broker-bot/plans "$BT" "{\"title\":\"Bad\",\"trafficGb\":1,\"durationDays\":30,\"price\":1,\"squadUuids\":[\"$SQUAD\",\"$SQUAD\"],\"categoryId\":null}"
 
 echo '== required membership and menu'
 control /_member '{"chatId":"@e2e_required","userId":5550001,"status":"left"}'
@@ -215,11 +221,50 @@ message /start
 call_check 'membership checked' '.method=="getChatMember" and .body.chat_id=="@e2e_required" and .body.user_id==5550001'
 call_check 'join prompt with channel and joined button' "$SEND and (.body.text|contains(\"please join our channel\")) and any(.body.reply_markup.inline_keyboard[][];.callback_data==\"joined\") and any(.body.reply_markup.inline_keyboard[][];.url==\"https://t.me/e2e_required\")"
 check 'membership gate hides menu' "all(.calls[]; ($MENU)|not)" "$CALLS"
+wait_calls 'first start logged in the Stats topic' "any(.calls[]; .method==\"sendMessage\" and .body.chat_id==\"-100123\" and .body.message_thread_id==$STATS_TOPIC and (.body.text|contains(\"New customer: E2E Customer · id 5550001\")))"
 control /_member '{"chatId":"@e2e_required","userId":5550001,"status":"member"}'
 callback joined
 call_check 'joined opens menu' "$SCREEN and ($MENU)"
 message /start
 call_check 'start sends menu with channel link' "$SEND and ($MENU) and any(.body.reply_markup.inline_keyboard[][];.url==\"https://t.me/e2e_store\")"
+check 'a returning customer is not logged again' 'all(.calls[]; (.body.text // "" | contains("New customer"))|not)' "$CALLS"
+
+echo '== languages and custom texts'
+expect 'get texts' 200 GET /api/broker-bot/texts "$BT"
+check 'one language and every default' '.response | .langs==["en"] and .defaultLang=="en" and .texts=={} and (.defaults|keys|sort)==["ar","en","fa","ru","tr","zh"] and (.defaults.fa.menuBuy|contains("خرید")) and (.defaults.zh.menuBuy|contains("购买"))'
+expect 'unclosed tag rejected' 400 PUT /api/broker-bot/texts "$BT" '{"langs":["en"],"defaultLang":"en","texts":{"en":{"useMenu":"<b>oops"}}}'
+check 'error names the text' 'tostring | contains("en.useMenu") and contains("never closed")'
+expect 'unknown variable rejected' 400 PUT /api/broker-bot/texts "$BT" '{"langs":["en"],"defaultLang":"en","texts":{"en":{"menuBuy":"Buy {price}"}}}'
+expect 'default outside the languages rejected' 400 PUT /api/broker-bot/texts "$BT" '{"langs":["en"],"defaultLang":"fa","texts":{}}'
+expect 'get texts again' 200 GET /api/broker-bot/texts "$BT"
+DEFAULT_GREETING=$(jq -c '.response.defaults.en.greeting' "$BODY")
+TEXTS="{\"langs\":[\"en\",\"fa\"],\"defaultLang\":\"en\",\"texts\":{\"en\":{\"useMenu\":\"Pick <b>one</b> & go\",\"menuBuy\":\"🛍 Shop\",\"greeting\":$DEFAULT_GREETING,\"menuSubs\":\"  \"},\"fa\":{}}}"
+expect 'save two languages and texts' 200 PUT /api/broker-bot/texts "$BT" "$TEXTS"
+check 'only real changes kept' '.response | .langs==["en","fa"] and .texts=={"en":{"useMenu":"Pick <b>one</b> & go","menuBuy":"🛍 Shop"}}'
+message 'hi'
+call_check 'custom text sent as safe HTML' "$SEND and .body.parse_mode==\"HTML\" and .body.text==\"Pick <b>one</b> &amp; go\" and any(.body.reply_markup.inline_keyboard[][];.text==\"🛍 Shop\") and any(.body.reply_markup.inline_keyboard[][];.callback_data==\"lang\")"
+callback lang
+call_check 'language picker lists the bot languages' "$SCREEN and ([.body.reply_markup.inline_keyboard[][] | .callback_data] == [\"lang:en\",\"lang:fa\",\"menu\"]) and any(.body.reply_markup.inline_keyboard[][];.text==\"✅ English\")"
+callback lang:fa
+call_check 'picking Persian redraws the menu in Persian' "$SCREEN and (.body.text|contains(\"خوش اومدی\")) and any(.body.reply_markup.inline_keyboard[][];.text==\"🛒 خرید پلن\")"
+message 'hi'
+call_check 'the choice sticks' "$SEND and (.body.text|contains(\"برای شروع\"))"
+callback lang:ru
+call_check 'a language the bot does not speak shows the picker' "$SCREEN and (.body.text|contains(\"زبانت\"))"
+control /_member '{"chatId":"@e2e_required","userId":5550002,"status":"member"}'
+MSG=$((MSG+1))
+push "$(jq -nc --argjson id "$MSG" '{message:{message_id:$id,date:now|floor,
+  from:{id:5550002,is_bot:false,first_name:"Persian",language_code:"fa-IR"},chat:{id:5550002,type:"private"},text:"/start"}}')"
+call_check 'new customer gets their Telegram language' '.method=="sendMessage" and (.body.chat_id|tostring)=="5550002" and (.body.text|contains("خوش اومدی"))'
+expect 'enable Chinese' 200 PUT /api/broker-bot/texts "$BT" '{"langs":["en","fa","zh"],"defaultLang":"en","texts":{}}'
+control /_member '{"chatId":"@e2e_required","userId":5550003,"status":"member"}'
+MSG=$((MSG+1))
+push "$(jq -nc --argjson id "$MSG" '{message:{message_id:$id,date:now|floor,
+  from:{id:5550003,is_bot:false,first_name:"Chinese",language_code:"zh-hans"},chat:{id:5550003,type:"private"},text:"/start"}}')"
+call_check 'a zh-hans customer gets Chinese' '.method=="sendMessage" and (.body.chat_id|tostring)=="5550003" and (.body.text|contains("欢迎加入")) and any(.body.reply_markup.inline_keyboard[]?[]?;.text=="🛒 购买套餐")'
+expect 'back to English only' 200 PUT /api/broker-bot/texts "$BT" '{"langs":["en"],"defaultLang":"en","texts":{}}'
+message /start
+call_check 'a disabled language falls back to the default' "$SEND and ($MENU) and (.body.text|contains(\"Welcome aboard\"))"
 
 echo '== wallet receipt and staff approval'
 callback wallet
@@ -227,7 +272,7 @@ call_check 'wallet screen offers charge' "$SCREEN and (.body.text|contains(\"0 T
 callback charge
 call_check 'charge asks for amount' "$SCREEN and (.body.text|contains(\"Send the amount in Toman\"))"
 message '50,000'
-call_check 'instructions show amount, card and wallet' "$SEND and (.body.text|contains(\"50,000 Toman\") and contains(\"6037991234567890\") and contains(\"e2e-wallet-address\"))"
+call_check 'instructions show amount, card, wallet and other method' "$SEND and (.body.text|contains(\"50,000 Toman\") and contains(\"6037991234567890\") and contains(\"e2e-wallet-address\") and contains(\"<b>PayPal</b> · 1 USD = 100,000 Toman\") and contains(\"e2e@paypal.test\"))"
 photo
 call_check 'photo copied to review topic' ".method==\"copyMessage\" and .body.chat_id==\"-100123\" and .body.from_chat_id==\"5550001\" and .body.message_id==$MSG and .body.message_thread_id==$REVIEW"
 call_check 'customer told receipt is pending' "$SEND and (.body.text|contains(\"top-up is under review\"))"
@@ -261,14 +306,15 @@ call_check 'buy lists category and Other' "$SCREEN and any(.body.reply_markup.in
 callback "cat:$CAT"
 call_check 'category lists Basic' "$SCREEN and any(.body.reply_markup.inline_keyboard[][];.callback_data==\"plan:$PLAN\")"
 callback "plan:$PLAN"
-call_check 'plan review offers purchase' "$SCREEN and (.body.text|contains(\"Basic\")) and any(.body.reply_markup.inline_keyboard[][];(.callback_data // \"\")|startswith(\"pur:$PLAN:\"))"
+call_check 'plan review offers purchase' "$SCREEN and (.body.text|contains(\"Basic\") and contains(\"Devices at once</b>: 2\")) and any(.body.reply_markup.inline_keyboard[][];(.callback_data // \"\")|startswith(\"pur:$PLAN:\"))"
 PUR=$(jq -r '[.calls[]|select(.method=="editMessageText")|.body.reply_markup.inline_keyboard[][]|.callback_data // empty|select(startswith("pur:"))]|last' "$CALLS")
 callback "$PUR"
 call_check 'purchase approved with link' "$SCREEN and (.body.text|contains(\"Your subscription is active\") and contains(\"https://\"))"
+wait_calls 'purchase logged' "any(.calls[]; .method==\"sendMessage\" and .body.chat_id==\"-100123\" and .body.message_thread_id==$STATS_TOPIC and (.body.text|test(\"Order #[0-9]+: E2E Customer bought Basic for 10,000 Toman\")))"
 expect 'broker lists created subscription user' 200 GET '/api/users?start=0&size=50' "$BT"
 check 'one user with customer Telegram ID' '.response | .total==1 and (.users|length)==1 and (.users[0].telegramId|tostring)=="5550001"'
 USER_ID=$(jqb '.response.users[0].id'); SHORT=$(jqb '.response.users[0].shortUuid')
-check 'user belongs to broker and plan squad' ".response.users[0] | .brokerUuid==\"$BRK\" and .trafficLimitBytes==1073741824 and any(.activeInternalSquads[];.uuid==\"$SQUAD\")"
+check 'user belongs to broker and both plan squads' ".response.users[0] | .brokerUuid==\"$BRK\" and .trafficLimitBytes==1073741824 and .ipLimit==2 and ([.activeInternalSquads[].uuid]|sort)==([\"$SQUAD\",\"$SQUAD2\"]|sort)"
 call_check 'approved link matches created user' "$SCREEN and (.body.text|contains(\"/$SHORT</code>\"))"
 callback "$PUR"
 check 'a second tap on the same pay button does nothing' '[.calls[]|select(.method=="editMessageText" or .method=="sendMessage")]|length==0' "$CALLS"
@@ -312,6 +358,137 @@ expect 'manual top-up' 200 POST /api/broker-bot/actions/top-up "$BT" '{"telegram
 check 'manual credit returns exact balance' '.response | .name=="E2E Customer" and .balance==41234'
 read_calls
 call_check 'manual credit notifies customer' "$SEND and (.body.text|contains(\"Wallet charged\") and contains(\"1,234 Toman\") and contains(\"41,234 Toman\"))"
+wait_calls 'manual credit logged' "any(.calls[]; .method==\"sendMessage\" and .body.chat_id==\"-100123\" and .body.message_thread_id==$STATS_TOPIC and (.body.text|contains(\"1,234 Toman added to E2E Customer from the panel\")))"
+
+echo '== referral program'
+expect 'a share above 100% rejected' 400 PATCH /api/broker-bot/settings "$BT" '{"referralPercent":101}'
+expect 'referrals on at 10%' 200 PATCH /api/broker-bot/settings "$BT" '{"referralPercent":10}'
+check 'referral share saved' '.response.referralPercent==10'
+# Menu presses, not /start: customer messages are rate-limited and the later sections send many.
+callback menu
+call_check 'menu offers invites' "$SCREEN and any(.body.reply_markup.inline_keyboard[][];.callback_data==\"invite\")"
+callback invite
+call_check 'invite screen shows the link, the share and a share button' "$SCREEN and (.body.text|contains(\"?start=ref\") and contains(\"<b>10%</b>\") and contains(\"Friends invited: <b>0</b>\")) and any(.body.reply_markup.inline_keyboard[][];(.url // \"\")|startswith(\"https://t.me/share/url?url=\"))"
+REF=$(jq -r '[.calls[]|select(.method=="editMessageText")|.body.text]|last' "$CALLS" | grep -o 'ref[0-9]*' | head -1)
+message "/start $REF" 5550004 5550004
+call_check 'an invited customer gets the menu' '.method=="sendMessage" and (.body.chat_id|tostring)=="5550004" and (.body.text|contains("Welcome aboard"))'
+wait_calls 'invited start logged with the inviter' "any(.calls[]; .method==\"sendMessage\" and .body.chat_id==\"-100123\" and .body.message_thread_id==$STATS_TOPIC and (.body.text|contains(\"New customer: E2E Customer · id 5550004\") and contains(\"Invited by E2E Customer\")))"
+message "/start $REF" 5550002 5550002
+message "/start $REF"
+callback invite
+call_check 'existing customers and the referrer themself are not counted' "$SCREEN and (.body.text|contains(\"Friends invited: <b>1</b>\"))"
+callback charge 5550004 5550004
+message 20000 5550004 5550004
+message 'Paid, reference 4411' 5550004 5550004
+expect 'invited customer receipt pending' 200 GET /api/broker-bot/orders "$BT"
+INVITED=$(jqb '.response.pending[] | select(.customer.tgUserId=="5550004" and .receiptKind=="text") | .id')
+mark
+expect 'approve the invited customer top-up' 200 POST "/api/broker-bot/orders/$INVITED/decision" "$BT" '{"decision":"approve"}'
+read_calls
+call_check 'referrer gets 10% and is told' "$SEND and (.body.text|contains(\"Referral reward\") and contains(\"2,000 Toman\") and contains(\"43,234 Toman\"))"
+wait_calls 'reward logged' "any(.calls[]; .method==\"sendMessage\" and .body.chat_id==\"-100123\" and .body.message_thread_id==$STATS_TOPIC and (.body.text|contains(\"Referral reward: 2,000 Toman to E2E Customer for top-up #$INVITED\")))"
+expect 'orders after the reward' 200 GET /api/broker-bot/orders "$BT"
+check 'reward recorded as a referral order' 'any(.response.orders[]; .kind=="referral" and .status=="approved" and .amount==2000 and .customer.tgUserId=="5550001")'
+callback invite 5550004 5550004
+REF2=$(jq -r '[.calls[]|select(.method=="editMessageText")|.body.text]|last' "$CALLS" | grep -o 'ref[0-9]*' | head -1)
+[[ $REF2 != "$REF" ]] || die 'second invite link' "same link $REF2"
+message "/start $REF2" 5550005 5550005
+callback charge 5550005 5550005
+message 10000 5550005 5550005
+message 'Paid' 5550005 5550005
+expect 'second-level receipt pending' 200 GET /api/broker-bot/orders "$BT"
+SECOND_LEVEL=$(jqb '.response.pending[] | select(.customer.tgUserId=="5550005") | .id')
+mark
+expect 'approve the second-level top-up' 200 POST "/api/broker-bot/orders/$SECOND_LEVEL/decision" "$BT" '{"decision":"approve"}'
+read_calls
+call_check 'the direct referrer gets the reward' '.method=="sendMessage" and (.body.chat_id|tostring)=="5550004" and (.body.text|contains("Referral reward") and contains("1,000 Toman"))'
+check 'nothing for the referrer’s referrer' "all(.calls[]; (($SEND) and (.body.text|contains(\"Referral reward\")))|not)" "$CALLS"
+callback invite
+call_check 'invite screen totals' "$SCREEN and (.body.text|contains(\"Friends invited: <b>1</b>\") and contains(\"Earned so far: <b>2,000 Toman</b>\"))"
+
+echo '== free trial'
+expect 'trial on a squad the broker lacks rejected' 400 PATCH /api/broker-bot/settings "$BT" '{"trial":{"isActive":true,"trafficGb":1,"durationDays":1,"squadUuids":["00000000-0000-4000-8000-000000000000"]}}'
+expect 'set up the free trial' 200 PATCH /api/broker-bot/settings "$BT" "{\"trial\":{\"isActive\":true,\"trafficGb\":0.5,\"durationDays\":1,\"ipLimit\":1,\"squadUuids\":[\"$SQUAD\",\"$SQUAD2\"]}}"
+check 'trial saved, nobody claimed yet' ".response | .trial=={isActive:true,trafficGb:0.5,durationDays:1,ipLimit:1,squadUuids:[\"$SQUAD\",\"$SQUAD2\"]} and .trialClaims==0"
+callback menu
+call_check 'menu offers the free trial' "$SCREEN and any(.body.reply_markup.inline_keyboard[][];.callback_data==\"trial\")"
+callback trial
+call_check 'trial offer shows traffic, duration and devices' "$SCREEN and (.body.text|contains(\"Try us for free\") and contains(\"0.5 GB\") and contains(\"1 days\") and contains(\"Devices at once</b>: 1\")) and any(.body.reply_markup.inline_keyboard[][];.callback_data==\"trialgo\")"
+callback trialgo
+call_check 'trial activated with a link' "$SCREEN and (.body.text|contains(\"Your subscription is active\"))"
+wait_calls 'trial logged' "any(.calls[]; .method==\"sendMessage\" and .body.chat_id==\"-100123\" and .body.message_thread_id==$STATS_TOPIC and (.body.text|contains(\"E2E Customer claimed the free trial\")))"
+callback trialgo
+check 'a second tap on Activate does nothing' '[.calls[]|select(.method=="editMessageText" or .method=="sendMessage")]|length==0' "$CALLS"
+expect 'users after the trial' 200 GET '/api/users?start=0&size=50' "$BT"
+check 'trial user has the trial limits and both squads' ".response | .total==2 and any(.users[]; .id!=$USER_ID and .trafficLimitBytes==536870912 and .ipLimit==1 and (.telegramId|tostring)==\"5550001\" and ([.activeInternalSquads[].uuid]|sort)==([\"$SQUAD\",\"$SQUAD2\"]|sort))"
+callback trial
+call_check 'the same account cannot claim twice' "$SCREEN and (.body.text|contains(\"already used your free trial\"))"
+callback mysubs
+call_check 'the trial is listed by name' "$SCREEN and any(.body.reply_markup.inline_keyboard[][];.text==\"🎁 Free trial\")"
+callback trial 5550004 5550004
+callback trialgo 5550004 5550004
+call_check 'another account can claim it' ".method==\"editMessageText\" and (.body.chat_id|tostring)==\"5550004\" and (.body.text|contains(\"Your subscription is active\"))"
+expect 'claims counted' 200 GET /api/broker-bot "$BT"
+check 'two claims this round' '.response.trialClaims==2'
+expect 'reset the trial' 200 PATCH /api/broker-bot/settings "$BT" '{"resetTrial":true}'
+check 'a new round starts empty' '.response.trialClaims==0'
+callback trial
+call_check 'after a reset the trial is offered again' "$SCREEN and (.body.text|contains(\"Try us for free\"))"
+callback trialgo
+call_check 'and can be claimed again' "$SCREEN and (.body.text|contains(\"Your subscription is active\"))"
+expect 'switch the trial off' 200 PATCH /api/broker-bot/settings "$BT" "{\"trial\":{\"isActive\":false,\"trafficGb\":0.5,\"durationDays\":1,\"squadUuids\":[\"$SQUAD\"]}}"
+callback trial
+call_check 'a switched-off trial is unavailable' "$SCREEN and (.body.text|contains(\"Purchases are paused\"))"
+expect 'trial users' 200 GET '/api/users?start=0&size=50' "$BT"
+for id in $(jq -r ".response.users[] | select(.id!=$USER_ID) | .id" "$BODY"); do
+  expect "delete trial user $id" 204 DELETE "/api/users/$id" "$ADMIN"
+done
+
+echo '== stats'
+expect 'stats page' 200 GET /api/broker-bot/stats "$BT"
+check 'today counts everything' '.response.today | .newCustomers==5 and .referrals==2 and .activeCustomers==5 and .sales==1 and .salesAmount==10000 and .topups==3 and .topupsAmount==80000 and .rejectedTopups==1 and .trials==3 and .rewards==3000'
+check 'totals' '.response.totals | .customers==5 and .buyers==1 and .walletTotal==74234 and .pendingReceipts==0 and .trials==3'
+check 'weeks and months include today' '.response | .week.trials==3 and .month.sales==1 and (.daily|length)==30 and .daily[-1].trials==3 and .daily[0].trials==0'
+check 'top plans' ".response.topPlans==[{planId:$PLAN,title:\"Basic\",sales:1,salesAmount:10000}]"
+message /stats -100123 9000002
+check 'members who are not admins get no stats' 'all(.calls[]; .method!="sendMessage")' "$CALLS"
+message /stats -100123 9000001
+call_check 'admins get /stats' '.method=="sendMessage" and .body.chat_id=="-100123" and (.body.text|contains("Bot stats") and contains("Last 30 days") and contains("Plans sold: 1 · 10,000 Toman") and contains("Free trials: 3") and contains("Referral rewards: 3,000 Toman") and contains("Customers: 5"))'
+mark
+docker compose -f "$(dirname "$0")/docker-compose.yml" exec -T db psql -U postgres -qc \
+  "UPDATE broker_bots SET summary_posted_on = current_date - 1 WHERE broker_uuid = '$BRK'" >/dev/null \
+  || die 'make the daily summary due' 'needs the dev database container'
+wait_calls 'daily summary posted to the Stats topic' "any(.calls[]; .method==\"sendMessage\" and .body.chat_id==\"-100123\" and .body.message_thread_id==$STATS_TOPIC and (.body.text|contains(\"Daily summary\") and contains(\"Customers: 5\")))"
+call_check 'staff topics renamed to their current texts' ".method==\"editForumTopic\" and .body.message_thread_id==$STATS_TOPIC and .body.name==\"Stats\""
+sleep 6
+read_calls
+check 'one summary a day' '[.calls[]|select(.method=="sendMessage" and (.body.text|contains("Daily summary")))]|length==1' "$CALLS"
+expect 'referrals off' 200 PATCH /api/broker-bot/settings "$BT" '{"referralPercent":0}'
+callback menu
+call_check 'menu back to the basics' "$SCREEN and ($MENU)"
+
+echo '== trial in hours, daily cap, auto-delete'
+# Three trials went out today above, so a cap of 4 leaves one.
+expect 'trial in hours with a daily cap' 200 PATCH /api/broker-bot/settings "$BT" "{\"trial\":{\"isActive\":true,\"trafficGb\":0.5,\"durationDays\":1,\"durationHours\":6,\"dailyLimit\":4,\"deleteExpired\":true,\"squadUuids\":[\"$SQUAD\"]}}"
+check 'trial options saved' '.response.trial | .durationHours==6 and .dailyLimit==4 and .deleteExpired==true'
+callback trial 5550004 5550004
+call_check 'trial offer shows hours' '.method=="editMessageText" and (.body.chat_id|tostring)=="5550004" and (.body.text|contains("6 hours"))'
+callback trialgo 5550004 5550004
+call_check 'the 4th trial today goes out' '.method=="editMessageText" and (.body.chat_id|tostring)=="5550004" and (.body.text|contains("Your subscription is active"))'
+expect 'users after the hours trial' 200 GET '/api/users?start=0&size=50' "$BT"
+check 'it expires in 6 hours' '[.response.users[] | select((.telegramId|tostring)=="5550004") | (.expireAt[0:19]+"Z"|fromdateiso8601) - now] | length==1 and (.[0] > 5.9*3600 and .[0] < 6.1*3600)'
+callback trial 5550002 5550002
+call_check 'a 5th customer is told to come back tomorrow' '.method=="editMessageText" and (.body.chat_id|tostring)=="5550002" and (.body.text|startswith("⏳")) and any(.body.reply_markup.inline_keyboard[][];.callback_data=="buy")'
+callback trialgo 5550003 5550003
+call_check 'an old Activate button hits the cap too' '.method=="editMessageText" and (.body.chat_id|tostring)=="5550003" and (.body.text|startswith("⏳"))'
+expect 'claims counted' 200 GET /api/broker-bot "$BT"
+check 'only the allowed claim counted' '.response.trialClaims==2'
+expect 'switch the trial off' 200 PATCH /api/broker-bot/settings "$BT" "{\"trial\":{\"isActive\":false,\"trafficGb\":0.5,\"durationDays\":1,\"squadUuids\":[\"$SQUAD\"]}}"
+check 'hours, cap and auto-delete cleared' '.response.trial | has("durationHours")|not'
+expect 'trial users' 200 GET '/api/users?start=0&size=50' "$BT"
+for id in $(jq -r ".response.users[] | select(.id!=$USER_ID) | .id" "$BODY"); do
+  expect "delete trial user $id" 204 DELETE "/api/users/$id" "$ADMIN"
+done
 
 echo '== support relay'
 callback support

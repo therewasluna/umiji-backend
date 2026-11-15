@@ -12,9 +12,12 @@ import {
     GetBrokerBotCommand,
     GetBrokerBotOrdersCommand,
     GetBrokerBotReceiptCommand,
+    GetBrokerBotStatsCommand,
     TopUpBrokerBotWalletCommand,
     UpdateBrokerBotPlanCommand,
     UpdateBrokerBotSettingsCommand,
+    UpdateBrokerBotTextsCommand,
+    GetBrokerBotTextsCommand,
 } from '@libs/contracts/commands';
 
 export class ConnectBrokerBotBodyDto extends createZodDto(
@@ -76,4 +79,14 @@ export class CreateBrokerBotBroadcastResponseDto extends createZodDto(
 ) {}
 export class GetBrokerBotBroadcastsResponseDto extends createZodDto(
     GetBrokerBotBroadcastsCommand.ResponseSchema,
+) {}
+
+export class UpdateBrokerBotTextsBodyDto extends createZodDto(
+    UpdateBrokerBotTextsCommand.RequestBodySchema,
+) {}
+export class BrokerBotTextsResponseDto extends createZodDto(
+    GetBrokerBotTextsCommand.ResponseSchema,
+) {}
+export class GetBrokerBotStatsResponseDto extends createZodDto(
+    GetBrokerBotStatsCommand.ResponseSchema,
 ) {}

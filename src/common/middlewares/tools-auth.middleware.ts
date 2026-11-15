@@ -4,7 +4,7 @@ import { getQuery } from 'ufo';
 
 import { Logger } from '@nestjs/common';
 
-import { HttpExceptionWithErrorCodeType } from '@common/exception/http-exeception-with-error-code.type';
+import { RawCacheService } from '@common/raw-cache';
 import { isDevelopment } from '@common/utils/startup-app';
 import { BACKEND_TOOLS_ROOT, ROOT } from '@libs/contracts/api';
 import {
@@ -18,50 +18,62 @@ import {
 
 const logger = new Logger('ToolsAuth');
 
-export function toolsAuthMiddleware(appSecret: string) {
-    return (req: Request, res: Response, next: NextFunction) => {
-        const { ott } = getQuery(req.originalUrl);
+export function toolsAuthMiddleware(appSecret: string, rawCacheService: RawCacheService) {
+    return async (req: Request, res: Response, next: NextFunction) => {
+        let hasOtt = false;
+        try {
+            const { ott } = getQuery(req.originalUrl);
+            hasOtt = ott !== undefined;
+            const payload =
+                typeof ott === 'string' && ott.length > 0
+                    ? verifyJwt(ott, appSecret, BACKEND_TOOLS_JWT_SCOPES.OTT)
+                    : null;
 
-        if (typeof ott === 'string' && ott.length > 0) {
-            if (verifyJwt(ott, appSecret, 'ott')) {
-                const token = signJwt(appSecret);
+            if (payload?.jti) {
+                if (
+                    (await rawCacheService.getDelString(`backend-tools:ott:${payload.jti}`)) === '1'
+                ) {
+                    const token = signJwt(appSecret);
 
-                res.cookie(BACKEND_TOOLS_AUTH_COOKIE_NAME, token, {
-                    httpOnly: true,
-                    secure: !isDevelopment(),
-                    sameSite: 'lax',
-                    path: `${ROOT}${BACKEND_TOOLS_ROOT}`,
-                    maxAge: BACKEND_TOOLS_JWT_LIFETIME_HOURS * 3_600_000,
-                });
+                    res.cookie(BACKEND_TOOLS_AUTH_COOKIE_NAME, token, {
+                        httpOnly: true,
+                        secure: !isDevelopment(),
+                        sameSite: 'lax',
+                        path: `${ROOT}${BACKEND_TOOLS_ROOT}`,
+                        maxAge: BACKEND_TOOLS_JWT_LIFETIME_HOURS * 3_600_000,
+                    });
 
-                logger.warn(
-                    `Tools access granted. Request: ${req.originalUrl}. IP: ${'clientIp' in req ? req.clientIp : 'unknown'}`,
-                );
+                    logger.warn(`Tools access granted. Path: ${req.baseUrl}${req.path}.`);
 
-                const redirectUrl = new URL(req.originalUrl, 'http://localhost');
-                redirectUrl.searchParams.delete('ott');
-                res.redirect(redirectUrl.pathname + redirectUrl.search);
+                    const redirectUrl = new URL(req.originalUrl, 'http://localhost');
+                    redirectUrl.searchParams.delete('ott');
+                    res.redirect(redirectUrl.pathname + redirectUrl.search);
 
-                return;
-            } else {
-                throw new HttpExceptionWithErrorCodeType(
-                    ERRORS.FORBIDDEN.message,
-                    ERRORS.FORBIDDEN.code,
-                    ERRORS.FORBIDDEN.httpCode,
-                );
+                    return;
+                }
+
+                return rejectToolsRequest(req, res);
             }
-        }
 
-        if (!hasValidCookie(req, appSecret)) {
-            throw new HttpExceptionWithErrorCodeType(
-                ERRORS.FORBIDDEN.message,
-                ERRORS.FORBIDDEN.code,
-                ERRORS.FORBIDDEN.httpCode,
-            );
-        }
+            if (!hasValidCookie(req, appSecret)) {
+                return rejectToolsRequest(req, res);
+            }
 
-        return next();
+            return next();
+        } catch (error) {
+            if (hasOtt) return rejectToolsRequest(req, res);
+            next(error);
+        }
     };
+}
+
+function rejectToolsRequest(req: Request, res: Response): void {
+    res.status(ERRORS.FORBIDDEN.httpCode).json({
+        timestamp: new Date().toISOString(),
+        path: `${req.baseUrl}${req.path}`,
+        message: 'Forbidden',
+        errorCode: ERRORS.FORBIDDEN.code,
+    });
 }
 
 function hasValidCookie(req: Request, appSecret: string): boolean {
@@ -71,7 +83,7 @@ function hasValidCookie(req: Request, appSecret: string): boolean {
         return false;
     }
 
-    return verifyJwt(token, appSecret, BACKEND_TOOLS_JWT_SCOPES.ACCESS);
+    return verifyJwt(token, appSecret, BACKEND_TOOLS_JWT_SCOPES.ACCESS) !== null;
 }
 
 function getCookie(req: Request, name: string): string | null {
@@ -99,15 +111,19 @@ function signJwt(appSecret: string) {
     });
 }
 
-function verifyJwt(token: string, appSecret: string, scope: TBackendToolsJwtScope): boolean {
+function verifyJwt(
+    token: string,
+    appSecret: string,
+    scope: TBackendToolsJwtScope,
+): jwt.JwtPayload | null {
     try {
         const decoded = jwt.verify(token, appSecret, {
             issuer: BACKEND_TOOLS_JWT_ISSUER,
             ignoreExpiration: false,
         });
 
-        return typeof decoded === 'object' && decoded.scope === scope;
+        return typeof decoded === 'object' && decoded.scope === scope ? decoded : null;
     } catch {
-        return false;
+        return null;
     }
 }

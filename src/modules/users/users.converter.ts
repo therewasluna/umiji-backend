@@ -26,6 +26,8 @@ const entityToModel = (entity: BaseUserEntity): Users => {
         trojanPassword: entity.trojanPassword,
         vlessUuid: entity.vlessUuid,
         ssPassword: entity.ssPassword,
+        mtprotoSecret: entity.mtprotoSecret,
+        mtprotoAdTag: entity.mtprotoAdTag,
 
         description: entity.description,
         tag: entity.tag,
@@ -34,6 +36,7 @@ const entityToModel = (entity: BaseUserEntity): Users => {
         email: entity.email,
 
         hwidDeviceLimit: entity.hwidDeviceLimit,
+        ipLimit: entity.ipLimit,
 
         externalSquadUuid: entity.externalSquadUuid,
         brokerUuid: entity.brokerUuid,

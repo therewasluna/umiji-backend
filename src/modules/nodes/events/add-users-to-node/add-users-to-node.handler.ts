@@ -4,6 +4,7 @@ import { EventsHandler } from '@nestjs/cqrs';
 
 import { AddUsersCommand as AddUsersToNodeCommandSdk } from '@umiji/node-contract';
 
+import { getMtprotoSecret } from '@common/helpers/xray-config/mtproto-secret';
 import { isSS2022Method } from '@common/helpers/xray-config/ss-cipher';
 import { getVlessFlowFromDbInbound } from '@common/utils/flow/get-vless-flow';
 
@@ -54,9 +55,15 @@ export class AddUsersToNodeHandler implements IEventHandler<AddUsersToNodeEvent>
                 const usersToRemove: Array<{ userId: string; hashUuid: string }> = [];
 
                 for (const user of usersResult.response) {
-                    const { id, trojanPassword, vlessUuid, ssPassword, inbounds } = user;
-
-                    if (inbounds.length === 0) continue;
+                    const {
+                        id,
+                        trojanPassword,
+                        vlessUuid,
+                        ssPassword,
+                        mtprotoSecret,
+                        mtprotoAdTag,
+                        inbounds,
+                    } = user;
 
                     const filteredInbounds = inbounds.filter((ib) => activeTags.has(ib.tag));
 
@@ -94,6 +101,13 @@ export class AddUsersToNodeHandler implements IEventHandler<AddUsersToNodeEvent>
                                     return { type: inboundType, tag: inbound.tag };
                                 case 'shadowsocks22':
                                     return { type: inboundType, tag: inbound.tag };
+                                case 'mtproto':
+                                    return {
+                                        type: inboundType,
+                                        tag: inbound.tag,
+                                        secret: getMtprotoSecret({ mtprotoSecret, vlessUuid }),
+                                        adTag: mtprotoAdTag,
+                                    };
                                 default:
                                     throw new Error(`Unsupported inbound type: ${inboundType}`);
                             }

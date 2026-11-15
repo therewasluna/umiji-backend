@@ -19,6 +19,16 @@ import { GetExternalSquadByUuidResponseModel } from './models/get-external-squad
 import { GetExternalSquadsResponseModel } from './models/get-external-squads.response.model';
 import { ExternalSquadRepository } from './repositories/external-squad.repository';
 
+// The subscription headers apps read, as the panel's header editor lists them.
+const BROKER_RESPONSE_HEADERS = [
+    'profile-title',
+    'profile-web-page-url',
+    'profile-update-interval',
+    'support-url',
+    'routing',
+    'announce',
+];
+
 @Injectable()
 export class ExternalSquadService {
     private readonly logger = new Logger(ExternalSquadService.name);
@@ -116,6 +126,18 @@ export class ExternalSquadService {
                 )
             ) {
                 return fail(ERRORS.BROKER_ACTION_NOT_ALLOWED);
+            }
+
+            // Subscriptions are also served on the panel's domain, so a header like Set-Cookie or
+            // Clear-Site-Data would reach the owner's browser. Brokers get only what apps read.
+            const header = Object.keys(dto.responseHeadersAdd ?? {}).find(
+                (name) => !BROKER_RESPONSE_HEADERS.includes(name.toLowerCase()),
+            );
+            if (header !== undefined) {
+                return fail({
+                    ...ERRORS.BROKER_ACTION_NOT_ALLOWED,
+                    message: `Brokers can't set the "${header}" header. Allowed: ${BROKER_RESPONSE_HEADERS.join(', ')}.`,
+                });
             }
         }
 

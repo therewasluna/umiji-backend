@@ -35,9 +35,9 @@ import { GetNewUsersTrafficQuery } from '@modules/nodes-user-usage-history/queri
 import { CountOnlineUsersQuery } from '@modules/nodes/queries/count-online-users';
 import { GetAllNodesQuery } from '@modules/nodes/queries/get-all-nodes';
 import { GetNodesRecapQuery } from '@modules/nodes/queries/get-nodes-recap';
-import { GetInitDateQuery } from '@modules/umiji-settings/queries/get-init-date';
 import { ResponseRulesMatcherService } from '@modules/subscription-response-rules/services/response-rules-matcher.service';
 import { ResponseRulesParserService } from '@modules/subscription-response-rules/services/response-rules-parser.service';
+import { GetInitDateQuery } from '@modules/umiji-settings/queries/get-init-date';
 import { GetUsersDigestQuery } from '@modules/users/queries/get-users-digest';
 import { GetUsersRecapQuery } from '@modules/users/queries/get-users-recap';
 

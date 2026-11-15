@@ -23,6 +23,9 @@ services:
     container_name: umiji
     hostname: umiji
     <<: [*common, *logging, *env]
+    # Lets a node proxy on this server be set as 127.0.0.1 (the panel maps it to host.docker.internal).
+    extra_hosts:
+      - host.docker.internal:host-gateway
     volumes:
       - valkey-socket:/var/run/valkey
     ports:

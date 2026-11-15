@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { NODES_ROUTES, REST_API } from '../../api';
 import { getEndpointDetails } from '../../constants';
-import { NodeIpsSchema, NodesSchema } from '../../models';
+import { NodeIpsSchema, NodeProxyUrlSchema, NodesSchema } from '../../models';
 import { NodeResponseSchema } from './node.response';
 
 export namespace UpdateNodeCommand {
@@ -20,13 +20,7 @@ export namespace UpdateNodeCommand {
         name: z.optional(z.string().min(3).max(30)),
         address: z.optional(z.string().min(2)),
         port: z.optional(z.number().min(1).max(65535)),
-        proxyUrl: z
-            .string()
-            .regex(
-                /^socks5:\/\/(?:[^:@/\s]+(?::[^@/\s]*)?@)?[^:@/\s]+:\d{1,5}$/,
-                'Expected socks5://[user:pass@]host:port',
-            )
-            .nullish(),
+        proxyUrl: NodeProxyUrlSchema.nullish(),
         isTrafficTrackingActive: z.optional(z.boolean()),
         trafficLimitBytes: z.optional(z.number().min(0)),
         notifyPercent: z.optional(z.number().min(0).max(100)),
@@ -68,7 +62,6 @@ export namespace UpdateNodeCommand {
                 .max(10, 'Maximum 10 tags'),
         ),
         activePluginUuid: z.uuid().nullish(),
-        integrationUuids: z.optional(z.array(z.uuid()).max(20, 'Maximum 20 integrations')),
         note: z.optional(z.string().max(255).nullable()),
         ips: z.optional(NodeIpsSchema),
     });

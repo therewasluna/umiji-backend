@@ -2,6 +2,12 @@ import { z } from 'zod';
 
 import { RESET_PERIODS, USERS_STATUS } from '../constants';
 
+// Telegram proxy secrets and sponsored channel tags are both 16 bytes of hex.
+export const MtprotoHexSchema = z
+    .string()
+    .toLowerCase()
+    .regex(/^[0-9a-f]{32}$/, 'Must be exactly 32 hex characters (0-9, a-f)');
+
 export const UsersSchema = z.object({
     id: z.number(),
     shortUuid: z.string(),
@@ -15,11 +21,14 @@ export const UsersSchema = z.object({
     description: z.nullable(z.string()),
     tag: z.nullable(z.string()),
     hwidDeviceLimit: z.nullable(z.int()),
+    ipLimit: z.nullable(z.int()),
     externalSquadUuid: z.nullable(z.uuid()),
     brokerUuid: z.nullable(z.uuid()),
     trojanPassword: z.string(),
     vlessUuid: z.guid(),
     ssPassword: z.string(),
+    mtprotoSecret: z.string(),
+    mtprotoAdTag: z.nullable(z.string()),
     lastTriggeredThreshold: z.int(),
     subRevokedAt: z.nullable(z.iso.datetime().transform((str) => new Date(str))),
     lastTrafficResetAt: z.nullable(z.iso.datetime().transform((str) => new Date(str))),

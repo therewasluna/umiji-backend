@@ -36,15 +36,15 @@ export const CONTROLLERS_INFO = {
         description: '',
         resource: 'node-plugins',
     },
+    NODE_INSTALL: {
+        tag: 'Node Install Controller',
+        description: '',
+        resource: 'node-install',
+    },
     NODE_SSH: {
         tag: 'Node SSH Controller',
         description: '',
         resource: 'node-ssh',
-    },
-    NODE_INTEGRATIONS: {
-        tag: 'Node Integrations Controller',
-        description: 'Management of Node Integrations.',
-        resource: 'node-integrations',
     },
     BANDWIDTH_STATS: {
         tag: 'Bandwidth Stats Controller',

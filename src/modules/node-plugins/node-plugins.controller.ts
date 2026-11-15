@@ -107,7 +107,6 @@ export class NodePluginController {
         };
     }
 
-
     @Endpoint({
         type: GetSharedListsResponseDto,
         command: GetSharedListsCommand,
@@ -328,5 +327,4 @@ export class NodePluginController {
         errorHandler(result);
         return;
     }
-
 }

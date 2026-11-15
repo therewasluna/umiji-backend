@@ -58,11 +58,18 @@ model Users {
   trojanPassword         String    @map("trojan_password")
   vlessUuid              String    @map("vless_uuid") @db.Uuid
   ssPassword             String    @map("ss_password")
+  /// Telegram proxy secret: the one the broker chose, or one derived from vlessUuid. Null only on rows
+  /// whose derived secret was already taken when it was backfilled; those still derive it.
+  mtprotoSecret          String?   @unique @map("mtproto_secret") @db.VarChar(32)
+  /// This user's own sponsored channel tag from @MTProxybot. Overrides the inbound's.
+  mtprotoAdTag           String?   @map("mtproto_ad_tag") @db.VarChar(32)
   description            String?   @map("description")
   tag                    String?   @map("tag")
   telegramId             BigInt?   @map("telegram_id")
   email                  String?   @map("email")
   hwidDeviceLimit        Int?      @map("hwid_device_limit")
+  /// How many IPs may use this user at the same time, across all nodes. Null = unlimited.
+  ipLimit                Int?      @map("ip_limit")
   externalSquadUuid      String?   @map("external_squad_uuid") @db.Uuid
   lastTriggeredThreshold Int       @default(0) @map("last_triggered_threshold")
   brokerUuid             String?   @map("broker_uuid") @db.Uuid
@@ -133,6 +140,7 @@ model Admin {
 
 model Brokers {
   uuid              String    @id @db.Uuid
+  sessionVersion    Int       @default(0) @map("session_version")
   trafficLimitBytes BigInt    @default(0) @map("traffic_limit_bytes")
   usedTrafficBytes  BigInt    @default(0) @map("used_traffic_bytes")
   usersLimit        Int?      @map("users_limit")
@@ -178,13 +186,19 @@ model BrokerBots {
   groupId          String?  @map("group_id")
   reviewTopicId    Int?     @map("review_topic_id")
   logsTopicId      Int?     @map("logs_topic_id")
+  /// Default language: new customers and the staff group
   lang             String   @default("en") @map("lang")
-  greeting         String?  @map("greeting")
+  /// Languages customers can pick
+  langs            String[] @default(["en"]) @map("langs")
+  /// The broker's own texts, map of lang to map of text key to Telegram HTML or plain text
+  texts            Json     @default("{}") @map("texts")
   channelUrl       String?  @map("channel_url")
   /// List of { cardNumber, holderName }
   cards            Json     @default("[]") @map("cards")
   /// List of { asset, address }
   wallets          Json     @default("[]") @map("wallets")
+  /// List of { method, account, note }: PayPal, IBAN, SBP and other manual transfers
+  payMethods       Json     @default("[]") @map("pay_methods")
   /// List of { chatRef, title, url }
   requiredChannels Json     @default("[]") @map("required_channels")
   /// Groups seen by /find, list of { chatId, title, foundAt }
@@ -193,11 +207,20 @@ model BrokerBots {
   pendingRejects   Json     @default("{}") @map("pending_rejects")
   updateOffset     Int      @default(0) @map("update_offset")
   statsResetAt     DateTime @default(now()) @map("stats_reset_at")
+  /// Share of a referred customer's approved top-ups paid to their referrer, 0 = no referral program
+  referralPercent  Int      @default(0) @map("referral_percent")
+  /// The free test plan, { isActive, trafficGb, durationDays, squadUuids }. Null: never set up.
+  trial            Json?    @map("trial")
+  /// Each customer can claim the trial once per round; a reset starts a new round.
+  trialResetAt     DateTime @default(now()) @map("trial_reset_at")
+  /// UTC day of the last daily summary posted to the staff group
+  summaryPostedOn  DateTime @default(now()) @map("summary_posted_on") @db.Date
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
   broker Brokers @relation(fields: [brokerUuid], references: [uuid], onDelete: Cascade)
+  updates BrokerBotUpdates[]
 
   @@map("broker_bots")
 }
@@ -240,13 +263,15 @@ model BrokerBotPlans {
   durationDays Int      @map("duration_days")
   /// Toman
   price        Int      @map("price")
-  squadUuid    String?  @map("squad_uuid") @db.Uuid
+  /// The user gets every one of these squads. No FK: a squad the broker lost makes the plan unsellable.
+  squadUuids   String[] @default([]) @map("squad_uuids") @db.Uuid
+  /// IP limit given to users who buy or renew this plan. Null = unlimited.
+  ipLimit      Int?     @map("ip_limit")
   categoryId   Int?     @map("category_id")
   isActive     Boolean  @default(true) @map("is_active")
   createdAt    DateTime @default(now()) @map("created_at")
 
   broker   Brokers                  @relation(fields: [brokerUuid], references: [uuid], onDelete: Cascade)
-  squad    InternalSquads?          @relation(fields: [squadUuid], references: [uuid], onDelete: SetNull)
   category BrokerBotPlanCategories? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   orders   BrokerBotOrders[]
 
@@ -261,6 +286,8 @@ model BrokerBotCustomers {
   chatId        String   @map("chat_id")
   name          String?  @map("name")
   username      String?  @map("username")
+  /// Picked by the customer, or matched from Telegram on first contact. Null: the default.
+  lang          String?  @map("lang")
   /// none | awaiting_topup_amount | awaiting_receipt | support
   state         String   @default("none") @map("state")
   stateAmount   Int?     @map("state_amount")
@@ -268,14 +295,19 @@ model BrokerBotCustomers {
   wallet        BigInt   @default(0) @map("wallet")
   /// Forum topic of the customer's support ticket in the staff group.
   ticketTopicId Int?     @map("ticket_topic_id")
+  /// Who invited this customer, set on their first /start only
+  referredById  Int?     @map("referred_by_id")
   lastSeenAt    DateTime @default(now()) @map("last_seen_at")
   createdAt     DateTime @default(now()) @map("created_at")
 
-  broker Brokers           @relation(fields: [brokerUuid], references: [uuid], onDelete: Cascade)
-  orders BrokerBotOrders[]
+  broker     Brokers              @relation(fields: [brokerUuid], references: [uuid], onDelete: Cascade)
+  orders     BrokerBotOrders[]
+  referredBy BrokerBotCustomers?  @relation("Referrals", fields: [referredById], references: [id], onDelete: SetNull)
+  referrals  BrokerBotCustomers[] @relation("Referrals")
 
   @@unique([brokerUuid, tgUserId])
   @@index([brokerUuid, ticketTopicId])
+  @@index([referredById])
   @@map("broker_bot_customers")
 }
 
@@ -283,7 +315,7 @@ model BrokerBotOrders {
   id              Int       @id @default(autoincrement())
   brokerUuid      String    @map("broker_uuid") @db.Uuid
   customerId      Int       @map("customer_id")
-  /// topup | plan
+  /// topup | plan | trial (the free test plan) | referral (a reward credited to the referrer)
   kind            String    @map("kind")
   planId          Int?      @map("plan_id")
   /// Toman
@@ -297,8 +329,10 @@ model BrokerBotOrders {
   reviewMessageId Int?      @map("review_message_id")
   rejectReason    String?   @map("reject_reason")
   userId          BigInt?   @map("user_id")
-  /// Plan purchases: the one-time key of the review screen, so a double tap can't buy twice
+  /// Plan purchases: the one-time key of the review screen, so a double tap can't buy twice.
+  /// Trials: trial:<trialResetAt ms>, so each customer claims once per round.
   checkoutKey     String?   @map("checkout_key")
+  telegramUpdateId BigInt?  @map("telegram_update_id")
   createdAt       DateTime  @default(now()) @map("created_at")
   decidedAt       DateTime? @map("decided_at")
 
@@ -308,10 +342,28 @@ model BrokerBotOrders {
   user     Users?             @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@unique([customerId, checkoutKey])
+  @@unique([brokerUuid, telegramUpdateId])
   @@index([brokerUuid, createdAt])
   @@index([customerId])
   @@index([userId])
   @@map("broker_bot_orders")
+}
+
+model BrokerBotUpdates {
+  brokerUuid  String    @map("broker_uuid") @db.Uuid
+  updateId    BigInt    @map("update_id") @db.BigInt
+  payload     Json
+  status      String    @default("pending") @db.VarChar(12)
+  attempts    Int       @default(0)
+  availableAt DateTime  @default(now()) @map("available_at")
+  claimedAt   DateTime? @map("claimed_at")
+  processedAt DateTime? @map("processed_at")
+
+  bot BrokerBots @relation(fields: [brokerUuid], references: [brokerUuid], onDelete: Cascade)
+
+  @@id([brokerUuid, updateId])
+  @@index([brokerUuid, status, updateId])
+  @@map("broker_bot_updates")
 }
 
 model Passkeys {
@@ -385,8 +437,6 @@ model Nodes {
   countryCode  String   @default("XX") @map("country_code")
   tags         String[] @default([]) @map("tags")
 
-  integrationUuids String[] @default([]) @map("integration_uuids") @db.Uuid
-
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
@@ -405,18 +455,6 @@ model Nodes {
 
   @@index([id])
   @@map("nodes")
-}
-
-model Integrations {
-  uuid        String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  name        String  @unique @map("name") @db.VarChar(30)
-  description String? @map("description") @db.VarChar(255)
-  config      Json    @map("config")
-
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
-
-  @@map("integrations")
 }
 
 model NodesUserUsageHistory {
@@ -579,7 +617,6 @@ model InternalSquads {
   internalSquadInbounds InternalSquadInbounds[]
   internalSquadHosts    InternalSquadHostLinks[]
   brokers               BrokerInternalSquads[]
-  brokerBotPlans        BrokerBotPlans[]
 
   @@map("internal_squads")
 }

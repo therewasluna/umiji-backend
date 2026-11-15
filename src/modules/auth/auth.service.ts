@@ -6,6 +6,7 @@ import {
 } from '@simplewebauthn/server';
 import * as arctic from 'arctic';
 import { AxiosError } from 'axios';
+import { createHash } from 'node:crypto';
 import { catchError, firstValueFrom } from 'rxjs';
 
 import { HttpService } from '@nestjs/axios';
@@ -86,6 +87,10 @@ export class AuthService {
         try {
             const { username, password } = dto;
 
+            if (!(await this.canAttemptLogin(username, ip))) {
+                return fail(ERRORS.TOO_MANY_LOGIN_ATTEMPTS);
+            }
+
             const statusResponse = await this.getStatus();
 
             if (!statusResponse.isOk) {
@@ -93,13 +98,7 @@ export class AuthService {
             }
 
             if (!statusResponse.response.isLoginAllowed) {
-                await this.emitFailedLoginAttempt(
-                    username,
-                    password,
-                    ip,
-                    userAgent,
-                    'Login is not allowed.',
-                );
+                await this.emitFailedLoginAttempt(username, ip, userAgent, 'Login is not allowed.');
                 this.logger.error('Login is not allowed.');
                 return fail(ERRORS.FORBIDDEN);
             }
@@ -121,12 +120,12 @@ export class AuthService {
             }
 
             const isBroker = admin.isOk && admin.response.role === ROLE.BROKER;
+            let sessionVersion: number | undefined;
 
             // Brokers can only sign in with a password, so this toggle applies to the panel owner.
             if (!isBroker && !statusResponse.response.authentication.password.enabled) {
                 await this.emitFailedLoginAttempt(
                     username,
-                    password,
                     ip,
                     userAgent,
                     'Someone tried to login with password authentication, but it is disabled.',
@@ -140,7 +139,6 @@ export class AuthService {
             if (!admin.isOk) {
                 await this.emitFailedLoginAttempt(
                     username,
-                    password,
                     ip,
                     userAgent,
                     'Admin is not found in database.',
@@ -155,13 +153,7 @@ export class AuthService {
             );
 
             if (!isPasswordValid) {
-                await this.emitFailedLoginAttempt(
-                    username,
-                    password,
-                    ip,
-                    userAgent,
-                    'Invalid password.',
-                );
+                await this.emitFailedLoginAttempt(username, ip, userAgent, 'Invalid password.');
                 this.logger.error('Invalid password.');
                 return fail(ERRORS.FORBIDDEN);
             }
@@ -176,13 +168,13 @@ export class AuthService {
                 if (!broker.isOk || broker.response.isDisabled) {
                     await this.emitFailedLoginAttempt(
                         username,
-                        password,
                         ip,
                         userAgent,
                         'Broker is disabled.',
                     );
                     return fail(ERRORS.BROKER_ACCOUNT_INACTIVE);
                 }
+                sessionVersion = broker.response.sessionVersion;
             }
 
             const accessToken = this.jwtService.sign(
@@ -190,10 +182,12 @@ export class AuthService {
                     username,
                     uuid: admin.response.uuid,
                     role: isBroker ? ROLE.BROKER : ROLE.ADMIN,
+                    sessionVersion,
                 },
                 { expiresIn: `${this.jwtLifetime}h` },
             );
 
+            await this.clearLoginAttempts(username, ip);
             await this.emitLoginSuccess(username, ip, userAgent);
 
             return ok({ accessToken });
@@ -260,9 +254,7 @@ export class AuthService {
 
     public async getStatus(): Promise<TResult<GetStatusResponseModel>> {
         try {
-            const umijiSettings = await this.queryBus.execute(
-                new GetCachedUmijiSettingsQuery(),
-            );
+            const umijiSettings = await this.queryBus.execute(new GetCachedUmijiSettingsQuery());
 
             const adminCount = await this.getAdminCount();
 
@@ -369,9 +361,7 @@ export class AuthService {
                 return fail(ERRORS.FORBIDDEN);
             }
 
-            const umijiSettings = await this.queryBus.execute(
-                new GetCachedUmijiSettingsQuery(),
-            );
+            const umijiSettings = await this.queryBus.execute(new GetCachedUmijiSettingsQuery());
 
             let authorizationURL: URL;
             let pkceVerifier: string | null = null;
@@ -389,10 +379,7 @@ export class AuthService {
                     authorizationURL = ghClient.createAuthorizationURL(state, ['user:email']);
                     break;
                 case OAUTH2_PROVIDERS.POCKETID:
-                    const pocketIdClient = await this.getGenericOAuth2Client(
-                        umijiSettings,
-                        true,
-                    );
+                    const pocketIdClient = await this.getGenericOAuth2Client(umijiSettings, true);
 
                     authorizationURL = pocketIdClient.createAuthorizationURL(
                         `https://${umijiSettings.oauth2Settings.pocketid.plainDomain}/authorize`,
@@ -422,8 +409,7 @@ export class AuthService {
                 case OAUTH2_PROVIDERS.GENERIC:
                     const authorizationEndpoint =
                         umijiSettings.oauth2Settings.generic.authorizationUrl!;
-                    const genericOAuth2Client =
-                        await this.getGenericOAuth2Client(umijiSettings);
+                    const genericOAuth2Client = await this.getGenericOAuth2Client(umijiSettings);
 
                     switch (umijiSettings.oauth2Settings.generic.withPkce) {
                         case false:
@@ -497,7 +483,6 @@ export class AuthService {
             if (!statusResponse.response.isLoginAllowed) {
                 await this.emitFailedLoginAttempt(
                     'Unknown',
-                    `OAuth2 code: ${code}`,
                     ip,
                     userAgent,
                     'Login is not allowed.',
@@ -508,7 +493,6 @@ export class AuthService {
             if (!statusResponse.response.authentication?.oauth2.providers[provider]) {
                 await this.emitFailedLoginAttempt(
                     'Unknown',
-                    `OAuth2 provider: ${provider}`,
                     '–',
                     '–',
                     `OAuth2 provider ${provider} is disabled.`,
@@ -520,7 +504,6 @@ export class AuthService {
             if (!firstAdmin.isOk) {
                 await this.emitFailedLoginAttempt(
                     'Unknown',
-                    '–',
                     ip,
                     userAgent,
                     'Superadmin not found.',
@@ -582,7 +565,6 @@ export class AuthService {
         if (!ceremony || ceremony.provider !== provider) {
             await this.emitFailedLoginAttempt(
                 'Unknown',
-                `State: ${state}`,
                 ip,
                 userAgent,
                 `${provider} state mismatch.`,
@@ -604,7 +586,6 @@ export class AuthService {
         ) {
             await this.emitFailedLoginAttempt(
                 'Unknown',
-                '–',
                 ip,
                 userAgent,
                 `${provider} code verifier not found.`,
@@ -617,7 +598,6 @@ export class AuthService {
         if (!emailResult.email) {
             await this.emitFailedLoginAttempt(
                 'Unknown',
-                '–',
                 ip,
                 userAgent,
                 emailResult.error ?? `Failed to get email from ${provider}.`,
@@ -627,12 +607,18 @@ export class AuthService {
 
         const allowedEmails = this.getAllowedEmails(provider, settings);
 
-        const isAllowed = emailResult.hasCustomClaim || allowedEmails.includes(emailResult.email);
+        const requiresVerifiedEmail =
+            provider === OAUTH2_PROVIDERS.POCKETID ||
+            provider === OAUTH2_PROVIDERS.KEYCLOAK ||
+            provider === OAUTH2_PROVIDERS.GENERIC;
+        const isAllowed =
+            emailResult.hasCustomClaim ||
+            (allowedEmails.includes(emailResult.email) &&
+                (!requiresVerifiedEmail || emailResult.emailVerified === true));
 
         if (!isAllowed) {
             await this.emitFailedLoginAttempt(
                 emailResult.email,
-                '–',
                 ip,
                 userAgent,
                 `${provider} email not in allowed list and no umijiAccess claim.`,
@@ -648,7 +634,12 @@ export class AuthService {
         code: string,
         codeVerifier: string | null,
         settings: UmijiSettingsEntity,
-    ): Promise<{ email: string | null; hasCustomClaim?: boolean; error?: string }> {
+    ): Promise<{
+        email: string | null;
+        emailVerified?: boolean;
+        hasCustomClaim?: boolean;
+        error?: string;
+    }> {
         try {
             switch (provider) {
                 case OAUTH2_PROVIDERS.GITHUB:
@@ -798,16 +789,19 @@ export class AuthService {
 
     private extractEmailFromIdToken(idToken: string): {
         email: string | null;
+        emailVerified: boolean;
         hasCustomClaim?: boolean;
         error?: string;
     } {
         const claims = arctic.decodeIdToken(idToken);
         const email = 'email' in claims && typeof claims.email === 'string' ? claims.email : null;
+        const emailVerified = 'email_verified' in claims && claims.email_verified === true;
         const hasCustomClaim =
             UMIJI_CUSTOM_CLAIM_KEY in claims && claims[UMIJI_CUSTOM_CLAIM_KEY] === true;
 
         return {
             email,
+            emailVerified,
             hasCustomClaim,
             error: email ? undefined : 'Missing email in ID token',
         };
@@ -835,6 +829,28 @@ export class AuthService {
         return hashPassword(plainPassword, this.jwtSecret);
     }
 
+    private loginAttemptKeys(username: string, ip: string): [string, string] {
+        const key = (value: string) => createHash('sha256').update(value).digest('hex');
+        return [
+            `auth:login:ip:${key(ip || 'unknown')}`,
+            // Per username and IP, so wrong tries from elsewhere can't lock the owner out.
+            `auth:login:user:${key(`${username.toLowerCase()}|${ip || 'unknown'}`)}`,
+        ];
+    }
+
+    // Counted before the password check so a burst can't slip past; a success clears it.
+    private async canAttemptLogin(username: string, ip: string): Promise<boolean> {
+        const [ipKey, usernameKey] = this.loginAttemptKeys(username, ip);
+        const ipAttempts = await this.rawCacheService.incrementWithTtl(ipKey, 300);
+        const usernameAttempts = await this.rawCacheService.incrementWithTtl(usernameKey, 300);
+
+        return ipAttempts <= 20 && usernameAttempts <= 10;
+    }
+
+    private async clearLoginAttempts(username: string, ip: string): Promise<void> {
+        await this.rawCacheService.delMany(this.loginAttemptKeys(username, ip));
+    }
+
     private async verifyPassword(plainPassword: string, storedHash: string): Promise<boolean> {
         return verifyPassword(plainPassword, storedHash, this.jwtSecret);
     }
@@ -847,7 +863,6 @@ export class AuthService {
 
     private async emitFailedLoginAttempt(
         username: string,
-        password: string,
         ip: string,
         userAgent: string,
         description?: string,
@@ -857,7 +872,6 @@ export class AuthService {
             new ServiceEvent(EVENTS.SERVICE.LOGIN_ATTEMPT_FAILED, {
                 loginAttempt: {
                     username,
-                    password,
                     ip,
                     userAgent,
                     description: description ?? '–',
@@ -893,10 +907,7 @@ export class AuthService {
                 return fail(ERRORS.FORBIDDEN);
             }
 
-            if (
-                !umijiSettings.passkeySettings.rpId ||
-                !umijiSettings.passkeySettings.origin
-            ) {
+            if (!umijiSettings.passkeySettings.rpId || !umijiSettings.passkeySettings.origin) {
                 return fail(ERRORS.FORBIDDEN);
             }
 
@@ -963,7 +974,6 @@ export class AuthService {
             if (!umijiSettings.passkeySettings.enabled) {
                 await this.emitFailedLoginAttempt(
                     'Unknown',
-                    '–',
                     ip,
                     userAgent,
                     'Passkey authentication is not enabled.',
@@ -971,13 +981,9 @@ export class AuthService {
                 return fail(ERRORS.FORBIDDEN);
             }
 
-            if (
-                !umijiSettings.passkeySettings.rpId ||
-                !umijiSettings.passkeySettings.origin
-            ) {
+            if (!umijiSettings.passkeySettings.rpId || !umijiSettings.passkeySettings.origin) {
                 await this.emitFailedLoginAttempt(
                     'Unknown',
-                    '–',
                     ip,
                     userAgent,
                     'Passkey authentication is not configured.',
@@ -990,13 +996,7 @@ export class AuthService {
             const admin = await this.getFirstAdmin();
 
             if (!admin.isOk) {
-                await this.emitFailedLoginAttempt(
-                    'Unknown',
-                    '–',
-                    ip,
-                    userAgent,
-                    'Admin is not found.',
-                );
+                await this.emitFailedLoginAttempt('Unknown', ip, userAgent, 'Admin is not found.');
                 return fail(ERRORS.FORBIDDEN);
             }
 
@@ -1009,13 +1009,7 @@ export class AuthService {
                 : null;
 
             if (!expectedChallenge || challengeOwner !== admin.response.uuid) {
-                await this.emitFailedLoginAttempt(
-                    'Unknown',
-                    '–',
-                    ip,
-                    userAgent,
-                    'Challenge not found.',
-                );
+                await this.emitFailedLoginAttempt('Unknown', ip, userAgent, 'Challenge not found.');
                 return fail(ERRORS.FORBIDDEN);
             }
 
@@ -1024,13 +1018,7 @@ export class AuthService {
             );
 
             if (!passkey.isOk) {
-                await this.emitFailedLoginAttempt(
-                    'Unknown',
-                    '–',
-                    ip,
-                    userAgent,
-                    'Passkey not found.',
-                );
+                await this.emitFailedLoginAttempt('Unknown', ip, userAgent, 'Passkey not found.');
                 return fail(ERRORS.FORBIDDEN);
             }
 
@@ -1054,7 +1042,6 @@ export class AuthService {
             if (!verification.verified) {
                 await this.emitFailedLoginAttempt(
                     'Unknown',
-                    '–',
                     ip,
                     userAgent,
                     'Passkey authentication failed.',
@@ -1152,7 +1139,12 @@ export class AuthService {
 
         const tokenData = arctic.decodeIdToken(tokens.idToken());
 
-        if (!('id' in tokenData) || typeof tokenData.id !== 'string') {
+        const id = 'id' in tokenData ? tokenData.id : undefined;
+        if (
+            (typeof id !== 'string' &&
+                (typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0)) ||
+            id === ''
+        ) {
             return {
                 email: null,
                 hasCustomClaim: false,
@@ -1160,16 +1152,17 @@ export class AuthService {
             };
         }
 
-        if (!settings.oauth2Settings.telegram.allowedIds.includes(tokenData.id)) {
+        const telegramId = String(id);
+        if (!settings.oauth2Settings.telegram.allowedIds.includes(telegramId)) {
             return {
                 email: null,
                 hasCustomClaim: false,
-                error: `Telegram ID ${tokenData.id} is not in the allowed list`,
+                error: `Telegram ID ${telegramId} is not in the allowed list`,
             };
         }
 
         return {
-            email: tokenData.id,
+            email: telegramId,
             hasCustomClaim: false,
             error: undefined,
         };

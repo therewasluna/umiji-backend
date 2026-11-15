@@ -1,5 +1,8 @@
 x-base: &base
   image: ghcr.io/therewasluna/umiji-backend:3
+  # Lets a node proxy on this server be set as 127.0.0.1 (the panel maps it to host.docker.internal).
+  extra_hosts:
+    - host.docker.internal:host-gateway
 
 x-common: &common
   ulimits:

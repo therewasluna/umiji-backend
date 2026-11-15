@@ -100,7 +100,6 @@ export class InternalSquadController {
         };
     }
 
-
     @Endpoint({
         command: GetInternalSquadsCommand,
         httpCode: HttpStatus.OK,
@@ -291,5 +290,4 @@ export class InternalSquadController {
         errorHandler(result);
         return;
     }
-
 }

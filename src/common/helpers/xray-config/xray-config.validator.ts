@@ -1,4 +1,5 @@
 import { hasher } from 'node-object-hash';
+import { isIPv4 } from 'node:net';
 import {
     BalancingRule,
     InboundConfig,
@@ -18,6 +19,7 @@ import { getVlessFlow } from '@common/utils/flow/get-vless-flow';
 
 import { UserForConfigEntity } from '@modules/users/entities/users-for-config';
 
+import { getMtprotoSecret } from './mtproto-secret';
 import {
     getDecodedKeySize,
     getSsPassword,
@@ -25,7 +27,7 @@ import {
     SHADOWSOCKS_METHODS,
 } from './ss-cipher';
 
-const MANAGED_CLIENT_PROTOCOLS = new Set(['hysteria', 'shadowsocks', 'trojan', 'vless']);
+const MANAGED_CLIENT_PROTOCOLS = new Set(['hysteria', 'mtproto', 'shadowsocks', 'trojan', 'vless']);
 type ManagedInboundSettings = VLessInboundConfig | TrojanInboundConfig | ShadowsocksInboundConfig;
 
 const ALLOWED_PROTOCOLS = new Set([
@@ -33,6 +35,7 @@ const ALLOWED_PROTOCOLS = new Set([
     'http',
     'hysteria',
     'mixed',
+    'mtproto',
     'shadowsocks',
     'trojan',
     'tun',
@@ -42,6 +45,24 @@ const ALLOWED_PROTOCOLS = new Set([
 ]);
 
 const PROTECTED_ROOT_KEYS = new Set(['api', 'inbounds', 'metrics', 'snippets', 'stats']);
+
+const MTPROTO_SETTINGS = new Set(['adTag', 'clients', 'domain', 'publicIp', 'target']);
+
+// Server-side TCP tuning the app never sees. The rest of sockopt locks the app out or does nothing here.
+const MTPROTO_SOCKOPT = new Set([
+    'customSockopt',
+    'interface',
+    'mark',
+    'tcpCongestion',
+    'tcpFastOpen',
+    'tcpKeepAliveIdle',
+    'tcpKeepAliveInterval',
+    'tcpMaxSeg',
+    'tcpMptcp',
+    'tcpUserTimeout',
+    'tcpWindowClamp',
+    'v6only',
+]);
 
 const ALLOWED_NETWORKS = new Set([
     'grpc',
@@ -224,6 +245,22 @@ export class XRayConfig {
     }
 
     private addUsersToInbound(inbound: InboundConfig, users: UserForConfigEntity[]): void {
+        // mtproto comes from our own Xray build, so xray-typed doesn't know it.
+        if ((inbound.protocol as string) === 'mtproto') {
+            const settings = inbound.settings as { clients?: object[] };
+            settings.clients ??= [];
+
+            for (const user of users) {
+                settings.clients.push({
+                    secret: getMtprotoSecret(user),
+                    ...(user.mtprotoAdTag && { adTag: user.mtprotoAdTag }),
+                    email: user.id.toString(),
+                    id: user.vlessUuid,
+                });
+            }
+            return;
+        }
+
         switch (inbound.protocol) {
             case 'trojan':
                 if (!inbound.settings) {
@@ -418,6 +455,73 @@ export class XRayConfig {
             this.validateProtocol(inbound);
             this.validateTag(inbound, seenTags);
             this.validateShadowsocks(inbound);
+            this.validateMtproto(inbound);
+        }
+    }
+
+    private validateMtproto(inbound: InboundConfig): void {
+        if ((inbound.protocol as string) !== 'mtproto') return;
+
+        const { domain, target, adTag, publicIp } = (inbound.settings ?? {}) as {
+            adTag?: unknown;
+            domain?: unknown;
+            publicIp?: unknown;
+            target?: unknown;
+        };
+        if (typeof domain !== 'string' || !/^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(domain)) {
+            throw new Error(
+                `MTProto inbound "${inbound.tag}" needs "domain" in settings: ` +
+                    'the hostname of a site that serves TLS 1.3, like www.microsoft.com.',
+            );
+        }
+        // A bad value here would stop the core from starting, taking every inbound on the node with it.
+        if (
+            target !== undefined &&
+            (typeof target !== 'string' || !/^(\[[0-9a-f:]+\]|[^\s:[\]]+):\d{1,5}$/i.test(target))
+        ) {
+            throw new Error(
+                `MTProto inbound "${inbound.tag}" has an invalid "target": use host:port, like 127.0.0.1:8443.`,
+            );
+        }
+        if (adTag && (typeof adTag !== 'string' || !/^[0-9a-f]{32}$/i.test(adTag))) {
+            throw new Error(
+                `MTProto inbound "${inbound.tag}" has an invalid "adTag": use the 32 hex character tag from @MTProxybot.`,
+            );
+        }
+        if (publicIp && (typeof publicIp !== 'string' || !isIPv4(publicIp))) {
+            throw new Error(
+                `MTProto inbound "${inbound.tag}" has an invalid "publicIp": use this node's public IPv4 address.`,
+            );
+        }
+
+        const { network, security, sockopt, ...transport } = inbound.streamSettings ?? {};
+        if ((network && !['raw', 'tcp'].includes(network)) || (security && security !== 'none')) {
+            throw new Error(
+                `MTProto inbound "${inbound.tag}" brings its own TLS disguise, ` +
+                    'so it must run on plain TCP with no security set in streamSettings.',
+            );
+        }
+
+        // Xray accepts all of these, then they do nothing or no client can connect, with no error to go on.
+        const isSet = (value: unknown) =>
+            !!value && (typeof value !== 'object' || Object.keys(value).length > 0);
+        const unsupported = [
+            ...Object.keys(inbound.settings ?? {})
+                .filter((key) => !MTPROTO_SETTINGS.has(key))
+                .map((key) => `settings.${key}`),
+            ...Object.entries(transport)
+                .filter(([, value]) => isSet(value))
+                .map(([key]) => `streamSettings.${key}`),
+            ...Object.entries(sockopt ?? {})
+                .filter(([key, value]) => !MTPROTO_SOCKOPT.has(key) && isSet(value))
+                .map(([key]) => `sockopt.${key}`),
+            ...(inbound.sniffing?.enabled ? ['sniffing'] : []),
+        ];
+        if (unsupported.length > 0) {
+            throw new Error(
+                `MTProto inbound "${inbound.tag}" can't use ${unsupported.join(', ')}: ` +
+                    'the Telegram app only connects over plain TCP and has no way to use these.',
+            );
         }
     }
 

@@ -25,6 +25,9 @@ export const JOBS_INTERVALS = {
 
     EXPORT_NODE_CONNECTIONS: CronExpression.EVERY_5_MINUTES,
 
+    // Nodes forget the cross-node list 2 minutes after the last sync (node xray-overlay/app/iplimit).
+    SYNC_IP_LIMITS: CronExpression.EVERY_30_SECONDS,
+
     RESET_USER_TRAFFIC: {
         DAILY: EVERY_DAY_AT_MIDNIGHT_AND_5_MINUTES,
         MONTHLY_ROLLING: EVERY_DAY_AT_MIDNIGHT_AND_10_MINUTES,

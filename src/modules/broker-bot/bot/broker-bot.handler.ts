@@ -1,3 +1,4 @@
+import { Transactional } from '@nestjs-cls/transactional';
 import {
     BrokerBotCustomers,
     BrokerBotOrders,
@@ -13,24 +14,37 @@ import { QueryBus } from '@nestjs/cqrs';
 import { TypedConfigService } from '@common/config/app-config';
 import { TResult } from '@common/types';
 import { REST_API } from '@libs/contracts/api';
-import { CreateUserCommand } from '@libs/contracts/commands';
+import { BROKER_BOT_LANG_NAMES, CreateUserCommand } from '@libs/contracts/commands';
 
 import { BrokerEntity } from '@modules/brokers/entities';
 import { GetBrokerByUuidQuery } from '@modules/brokers/queries/get-broker-by-uuid';
 import { SubscriptionService } from '@modules/subscription/subscription.service';
 import { UsersService } from '@modules/users/users.service';
 
-import { BrokerBotRepository } from '../broker-bot.repository';
 import {
+    BotReport,
+    BrokerBotRepository,
+    StatsWindow,
+    TopupApproval,
+} from '../broker-bot.repository';
+import {
+    activeTrial,
     adminName,
+    botLangs,
+    defaultLang,
     esc,
     formatBytes,
     formatToman,
+    Html,
+    isLang,
     Lang,
-    M,
     menuKeyboard,
-    planDetails,
     planLabel,
+    planReview,
+    T,
+    translator,
+    Trial,
+    trialReview,
 } from './bot.messages';
 import { InlineButton, InlineKeyboard, TelegramClient, TelegramError } from './telegram.client';
 import { decryptToken } from './token-cipher';
@@ -43,11 +57,46 @@ const GB_BYTES = 1_073_741_824;
 const SUBS_PER_PAGE = 10;
 // Telegram refuses longer messages.
 const MAX_MESSAGE_LENGTH = 4096;
+const DAY_MS = 86_400_000;
+const HOUR_MS = 3_600_000;
+
+class SubscriptionCreationFailed extends Error {}
+
+/** "Sara @sara_m" for staff messages, or the Telegram ID when the customer has neither. */
+function who(customer: BrokerBotCustomers): string {
+    const parts = [customer.name, customer.username ? '@' + customer.username : ''];
+    return parts.filter(Boolean).join(' ') || customer.tgUserId;
+}
+
+function customerLang(bot: BrokerBots, customer: BrokerBotCustomers): Lang {
+    return isLang(customer.lang) && botLangs(bot).includes(customer.lang)
+        ? customer.lang
+        : defaultLang(bot);
+}
+
+/** A customer claims the free trial once per round; a reset in the panel starts a new one. */
+function trialKey(bot: BrokerBots): string {
+    return `trial:${bot.trialResetAt.getTime()}`;
+}
+
+/** Start of the current UTC day, the day the trial cap and the daily summary count in. */
+function utcToday(): Date {
+    return new Date(Date.now() - (Date.now() % DAY_MS));
+}
+
+type CreatedUser = Extract<
+    Awaited<ReturnType<UsersService['createUser']>>,
+    { isOk: true }
+>['response'];
 
 /** Fingerprint of what the customer agreed to on the plan review screen. */
 function planTerms(p: BrokerBotPlans): string {
+    // The limit is appended only when set, so plans without one keep their old fingerprint.
+    const devices = p.ipLimit ? `|${p.ipLimit}` : '';
     return createHash('sha256')
-        .update(`${p.title}|${p.price}|${p.trafficGb}|${p.durationDays}|${p.squadUuid}`)
+        .update(
+            `${p.title}|${p.price}|${p.trafficGb}|${p.durationDays}|${p.squadUuids.join(',')}${devices}`,
+        )
         .digest('hex')
         .slice(0, 8);
 }
@@ -59,6 +108,7 @@ interface TgUser {
     is_bot?: boolean;
     first_name?: string;
     username?: string;
+    language_code?: string;
 }
 interface TgChat {
     id: number;
@@ -90,7 +140,13 @@ interface Ctx {
     broker: BrokerEntity;
     bot: BrokerBots;
     tg: TelegramClient;
+    updateId?: number;
+    /** The customer's language once known, else the default. */
     lang: Lang;
+    /** Texts for the customer. */
+    t: T;
+    /** Texts for the staff group, always in the default language. */
+    st: T;
 }
 
 /** A message we can edit in place (the one a button was attached to). */
@@ -106,6 +162,11 @@ interface Card {
 interface Wallet {
     asset: string;
     address: string;
+}
+interface PayMethod {
+    method: string;
+    account: string;
+    note: string;
 }
 interface RequiredChannel {
     chatRef: string;
@@ -187,13 +248,24 @@ export class BrokerBotHandler {
     }
 
     /** Fresh broker + bot state for one update, so panel edits apply right away. */
-    public async context(brokerUuid: string, tg: TelegramClient): Promise<Ctx | null> {
+    public async context(
+        brokerUuid: string,
+        tg: TelegramClient,
+        updateId?: number,
+    ): Promise<Ctx | null> {
         const [bot, broker] = await Promise.all([
             this.repository.getBot(brokerUuid),
             this.getBroker(brokerUuid),
         ]);
         if (!bot?.botToken || !broker) return null;
-        return { broker, bot, tg, lang: bot.lang === 'fa' ? 'fa' : 'en' };
+        const lang = defaultLang(bot);
+        const st = translator(bot.texts, lang);
+        return { broker, bot, tg, updateId, lang, t: st, st };
+    }
+
+    /** Texts in this customer's language, for staff actions that message them. */
+    private tFor(ctx: Ctx, customer: BrokerBotCustomers): T {
+        return translator(ctx.bot.texts, customerLang(ctx.bot, customer));
     }
 
     private async getBroker(uuid: string): Promise<BrokerEntity | null> {
@@ -237,7 +309,10 @@ export class BrokerBotHandler {
     private log(ctx: Ctx, text: string): void {
         if (ctx.bot.groupId && ctx.bot.logsTopicId) {
             void ctx.tg
-                .sendMessage(ctx.bot.groupId, text, { messageThreadId: ctx.bot.logsTopicId })
+                .sendMessage(ctx.bot.groupId, text, {
+                    messageThreadId: ctx.bot.logsTopicId,
+                    parseMode: 'HTML',
+                })
                 .catch(() => {});
         }
     }
@@ -273,7 +348,20 @@ export class BrokerBotHandler {
                             await this.handleFind(ctx, msg);
                         }
                     } else if (String(msg.chat.id) === ctx.bot.groupId) {
-                        await this.handleGroupMessage(ctx, msg);
+                        if (cmd === '/stats') {
+                            if (
+                                msg.from &&
+                                this.rateLimit(
+                                    `tgstats:${ctx.broker.uuid}:${msg.from.id}`,
+                                    3,
+                                    60_000,
+                                )
+                            ) {
+                                await this.handleStats(ctx, msg);
+                            }
+                        } else {
+                            await this.handleGroupMessage(ctx, msg);
+                        }
                     }
                 }
             }
@@ -281,27 +369,57 @@ export class BrokerBotHandler {
             this.logger.error(error);
             this.log(
                 ctx,
-                M[ctx.lang].logError(error instanceof Error ? error.message : String(error)),
+                ctx.st('logError', {
+                    error: error instanceof Error ? error.message : String(error),
+                }),
             );
+            throw error;
         }
     }
 
     // ----------------------- customer DM -----------------------
 
-    private customerFrom(ctx: Ctx, from: TgUser, chatId: string): Promise<BrokerBotCustomers> {
-        return this.repository.upsertCustomer({
+    /**
+     * Records the customer and switches the context to their language. A new customer who came
+     * through an invite link is tied to the customer who shared it.
+     */
+    private async customerFrom(
+        ctx: Ctx,
+        from: TgUser,
+        chatId: string,
+        referrerId: null | number = null,
+    ): Promise<BrokerBotCustomers> {
+        // A new customer gets their Telegram app's language when the bot speaks it.
+        const appLang = from.language_code?.split('-')[0].toLowerCase();
+        // Only this broker's customers can refer: ids are shared by every broker's bot.
+        const referrer = referrerId
+            ? await this.repository.getCustomerById(ctx.broker.uuid, referrerId)
+            : null;
+        const { customer, isNew } = await this.repository.upsertCustomer({
             brokerUuid: ctx.broker.uuid,
             tgUserId: String(from.id),
             chatId,
             name: from.first_name ?? null,
             username: from.username ?? null,
+            lang: isLang(appLang) && botLangs(ctx.bot).includes(appLang) ? appLang : null,
+            referredById: referrer?.id ?? null,
         });
+        if (isNew) {
+            const vars = { customer: who(customer), tgId: customer.tgUserId };
+            this.log(
+                ctx,
+                referrer
+                    ? ctx.st('logNewReferral', { ...vars, referrer: who(referrer) })
+                    : ctx.st('logNewCustomer', vars),
+            );
+        }
+        ctx.lang = customerLang(ctx.bot, customer);
+        ctx.t = translator(ctx.bot.texts, ctx.lang);
+        return customer;
     }
 
-    private menuText(ctx: Ctx): string {
-        // A broker's custom greeting is plain text, so escape it for HTML mode.
-        const custom = ctx.bot.greeting?.trim();
-        return custom ? esc(custom) : M[ctx.lang].greeting;
+    private menuKeyboard(ctx: Ctx): InlineKeyboard {
+        return menuKeyboard(ctx.t, ctx.bot);
     }
 
     /** Edits a screen in place, so the chat stays a single, morphing message. */
@@ -318,36 +436,46 @@ export class BrokerBotHandler {
         }
     }
 
-    private backRow(lang: Lang, target: string): InlineButton[] {
-        return [{ text: M[lang].btnBack, callback_data: target }];
+    private backRow(ctx: Ctx, target: string): InlineButton[] {
+        return [{ text: ctx.t('btnBack'), callback_data: target }];
     }
 
     /** The main menu as a NEW message (for /start). */
     private async sendMenu(ctx: Ctx, chatId: string): Promise<void> {
-        await ctx.tg.sendMessage(chatId, this.menuText(ctx), {
-            keyboard: menuKeyboard(ctx.lang, ctx.bot.channelUrl),
+        await ctx.tg.sendMessage(chatId, ctx.t('greeting'), {
+            keyboard: this.menuKeyboard(ctx),
             parseMode: 'HTML',
         });
     }
 
     private async editMenu(ctx: Ctx, screen: Screen): Promise<void> {
-        await this.showScreen(
-            ctx,
-            screen,
-            this.menuText(ctx),
-            menuKeyboard(ctx.lang, ctx.bot.channelUrl),
-        );
+        await this.showScreen(ctx, screen, ctx.t('greeting'), this.menuKeyboard(ctx));
+    }
+
+    /** The languages the bot speaks, the customer's own ticked. */
+    private async showLanguages(ctx: Ctx, screen: Screen): Promise<void> {
+        const keyboard: InlineKeyboard = botLangs(ctx.bot).map((l) => [
+            {
+                text: `${l === ctx.lang ? '✅ ' : ''}${BROKER_BOT_LANG_NAMES[l]}`,
+                callback_data: `lang:${l}`,
+            },
+        ]);
+        keyboard.push(this.backRow(ctx, 'menu'));
+        await this.showScreen(ctx, screen, ctx.t('chooseLanguage'), keyboard);
     }
 
     private async handleDM(ctx: Ctx, msg: TgMessage): Promise<void> {
-        const customer = await this.customerFrom(ctx, msg.from!, String(msg.chat.id));
+        const text = msg.text?.trim();
+        // An invite link opens the bot with "/start ref<customer id>".
+        const [command, payload = ''] = text?.split(/\s+/) ?? [];
+        const referrerId =
+            command === '/start' && /^ref\d{1,9}$/.test(payload) ? Number(payload.slice(3)) : null;
+        const customer = await this.customerFrom(ctx, msg.from!, String(msg.chat.id), referrerId);
 
         // Force-subscribe gate: nothing works until mandatory channels are joined.
         if (!(await this.gateJoin(ctx, customer.chatId, msg.from!.id))) return;
 
-        const text = msg.text?.trim();
-
-        if (text === '/start') {
+        if (command === '/start') {
             await this.repository.setCustomerState(customer.id, 'none');
             await this.sendMenu(ctx, customer.chatId);
             return;
@@ -368,8 +496,8 @@ export class BrokerBotHandler {
             return;
         }
 
-        await ctx.tg.sendMessage(customer.chatId, M[ctx.lang].useMenu, {
-            keyboard: menuKeyboard(ctx.lang, ctx.bot.channelUrl),
+        await ctx.tg.sendMessage(customer.chatId, ctx.t('useMenu'), {
+            keyboard: this.menuKeyboard(ctx),
             parseMode: 'HTML',
         });
     }
@@ -377,9 +505,9 @@ export class BrokerBotHandler {
     /** A top-up receipt: posted to the review topic for an admin to approve. */
     private async submitReceipt(ctx: Ctx, customer: BrokerBotCustomers, msg: TgMessage) {
         const amount = customer.stateAmount;
-        await this.repository.setCustomerState(customer.id, 'none');
         if (!amount || amount <= 0) {
-            await ctx.tg.sendMessage(customer.chatId, M[ctx.lang].unavailable, {
+            await this.repository.setCustomerState(customer.id, 'none');
+            await ctx.tg.sendMessage(customer.chatId, ctx.t('unavailable'), {
                 parseMode: 'HTML',
             });
             return;
@@ -388,7 +516,12 @@ export class BrokerBotHandler {
         // The broker's state, the staff group and the pending cap were checked before the
         // customer was told where to pay. They may have sent money since, so the receipt is
         // always kept: it can be decided on the panel's Orders page too.
-        const order = await this.repository.createTopupOrder(ctx.broker.uuid, customer.id, amount);
+        const order = await this.repository.createTopupOrder(
+            ctx.broker.uuid,
+            customer.id,
+            amount,
+            ctx.updateId,
+        );
 
         // Kept so the receipt can be reviewed in the broker panel too.
         if (msg.photo?.length) {
@@ -401,8 +534,7 @@ export class BrokerBotHandler {
         } else if (msg.text) {
             await this.repository.setOrderReceipt(order.id, 'text', null, msg.text);
         }
-
-        if (ctx.bot.groupId && ctx.bot.reviewTopicId) {
+        if (ctx.bot.groupId && ctx.bot.reviewTopicId && !order.reviewMessageId) {
             // 1) Copy the customer's actual receipt (photo or text) into the review topic.
             const copied = await ctx.tg.copyMessage({
                 toChatId: ctx.bot.groupId,
@@ -414,18 +546,20 @@ export class BrokerBotHandler {
             // 2) The top-up details + approve/reject buttons as a reply beneath it.
             const details = await ctx.tg.sendMessage(
                 ctx.bot.groupId,
-                this.topupDetails(order, customer, ctx.lang),
+                this.topupDetails(ctx, order, customer),
                 {
                     messageThreadId: ctx.bot.reviewTopicId,
                     replyToMessageId: copied.message_id,
-                    keyboard: this.reviewKeyboard(order.id),
+                    keyboard: this.reviewKeyboard(ctx, order.id),
+                    parseMode: 'HTML',
                 },
             );
             await this.repository.setOrderReviewMessage(order.id, details.message_id);
         }
-        await ctx.tg.sendMessage(customer.chatId, M[ctx.lang].topupSubmitted, {
+        await ctx.tg.sendMessage(customer.chatId, ctx.t('topupSubmitted'), {
             parseMode: 'HTML',
         });
+        await this.repository.setCustomerState(customer.id, 'none');
     }
 
     private async relayCustomerToTicket(ctx: Ctx, customer: BrokerBotCustomers, msg: TgMessage) {
@@ -433,14 +567,17 @@ export class BrokerBotHandler {
         if (!groupId) {
             // Tickets are topics in the staff group; without one, say so instead of going silent.
             await this.repository.setCustomerState(customer.id, 'none');
-            await ctx.tg.sendMessage(customer.chatId, M[ctx.lang].supportUnavailable, {
+            await ctx.tg.sendMessage(customer.chatId, ctx.t('supportUnavailable'), {
                 parseMode: 'HTML',
             });
             return;
         }
         const relay = (topicId: number) =>
             msg.text
-                ? ctx.tg.sendMessage(groupId, `👤 ${msg.text}`, { messageThreadId: topicId })
+                ? ctx.tg.sendMessage(groupId, ctx.st('ticketRelay', { text: msg.text }), {
+                      messageThreadId: topicId,
+                      parseMode: 'HTML',
+                  })
                 : ctx.tg.copyMessage({
                       toChatId: groupId,
                       fromChatId: customer.chatId,
@@ -459,17 +596,19 @@ export class BrokerBotHandler {
             await relay(await this.openTicket(ctx, customer));
         }
         // Reassure the customer their message went through.
-        await ctx.tg.sendMessage(customer.chatId, M[ctx.lang].supportSent, { parseMode: 'HTML' });
+        await ctx.tg.sendMessage(customer.chatId, ctx.t('supportSent'), { parseMode: 'HTML' });
     }
 
     private async openTicket(ctx: Ctx, customer: BrokerBotCustomers): Promise<number> {
         const name = customer.name ?? customer.username ?? customer.tgUserId;
-        const topicId = await ctx.tg.createForumTopic(ctx.bot.groupId!, `🎫 ${name}`);
+        // Telegram caps topic names at 128 characters.
+        const topicName = ctx.st('ticketTopicName', { name }).slice(0, 128);
+        const topicId = await ctx.tg.createForumTopic(ctx.bot.groupId!, topicName);
         await this.repository.setTicketTopic(customer.id, topicId);
         await ctx.tg.sendMessage(
             ctx.bot.groupId!,
-            `New support ticket from ${name} (id ${customer.tgUserId}). Reply here to answer.`,
-            { messageThreadId: topicId },
+            ctx.st('ticketIntro', { name, tgId: customer.tgUserId }),
+            { messageThreadId: topicId, parseMode: 'HTML' },
         );
         return topicId;
     }
@@ -477,35 +616,37 @@ export class BrokerBotHandler {
     // ----------------------- wallet, top-up & checkout -----------------------
 
     private async showWallet(ctx: Ctx, screen: Screen, customer: BrokerBotCustomers) {
-        await this.showScreen(ctx, screen, M[ctx.lang].walletScreen(formatToman(customer.wallet)), [
-            [{ text: M[ctx.lang].btnCharge, callback_data: 'charge', style: 'primary' }],
-            this.backRow(ctx.lang, 'menu'),
-        ]);
+        await this.showScreen(
+            ctx,
+            screen,
+            ctx.t('walletScreen', { balance: formatToman(customer.wallet, ctx.t) }),
+            [
+                [{ text: ctx.t('btnCharge'), callback_data: 'charge', style: 'primary' }],
+                this.backRow(ctx, 'menu'),
+            ],
+        );
     }
 
     /** Why the customer can't top up now. Checked before they are told where to send money. */
     private async topupBlockedText(ctx: Ctx, customer: BrokerBotCustomers): Promise<null | string> {
         // No money in while the broker can't sell.
-        if (!this.canSell(ctx.broker)) return M[ctx.lang].unavailable;
-        const cards = ctx.bot.cards as unknown as Card[];
-        const wallets = ctx.bot.wallets as unknown as Wallet[];
-        if (cards.length === 0 && wallets.length === 0) return M[ctx.lang].topupNoMethods;
+        if (!this.canSell(ctx.broker)) return ctx.t('unavailable');
+        const methods = [ctx.bot.cards, ctx.bot.wallets, ctx.bot.payMethods] as unknown[][];
+        if (methods.every((list) => list.length === 0)) return ctx.t('topupNoMethods');
         // Receipts are reviewed in the staff group's topic.
-        if (!ctx.bot.groupId || !ctx.bot.reviewTopicId) return M[ctx.lang].topupNoMethods;
+        if (!ctx.bot.groupId || !ctx.bot.reviewTopicId) return ctx.t('topupNoMethods');
         const pending = await this.repository.countPendingByCustomer(ctx.broker.uuid, customer.id);
-        return pending >= MAX_PENDING_ORDERS ? M[ctx.lang].tooManyPending : null;
+        return pending >= MAX_PENDING_ORDERS ? ctx.t('tooManyPending') : null;
     }
 
     private async startCharge(ctx: Ctx, screen: Screen, customer: BrokerBotCustomers) {
         const blocked = await this.topupBlockedText(ctx, customer);
         if (blocked) {
-            await this.showScreen(ctx, screen, blocked, [this.backRow(ctx.lang, 'wallet')]);
+            await this.showScreen(ctx, screen, blocked, [this.backRow(ctx, 'wallet')]);
             return;
         }
         await this.repository.setCustomerState(customer.id, 'awaiting_topup_amount');
-        await this.showScreen(ctx, screen, M[ctx.lang].chargePrompt, [
-            this.backRow(ctx.lang, 'wallet'),
-        ]);
+        await this.showScreen(ctx, screen, ctx.t('chargePrompt'), [this.backRow(ctx, 'wallet')]);
     }
 
     /** The customer typed a top-up amount: show where to pay and wait for the receipt. */
@@ -518,7 +659,7 @@ export class BrokerBotHandler {
         }
         const digits = raw.replace(/[\s,٬_]/g, ''); // strip thousands separators / spaces
         if (!/^\d+$/.test(digits) || Number(digits) <= 0 || Number(digits) > MAX_TOMAN) {
-            await ctx.tg.sendMessage(customer.chatId, M[ctx.lang].invalidAmount, {
+            await ctx.tg.sendMessage(customer.chatId, ctx.t('invalidAmount'), {
                 parseMode: 'HTML',
             });
             return;
@@ -527,16 +668,24 @@ export class BrokerBotHandler {
 
         const cards = ctx.bot.cards as unknown as Card[];
         const wallets = ctx.bot.wallets as unknown as Wallet[];
+        const payMethods = ctx.bot.payMethods as unknown as PayMethod[];
         const destinations = [
             ...cards.map(
                 (c) => `💳 <b>${esc(c.holderName)}</b>\n<code>${esc(c.cardNumber)}</code>`,
             ),
             ...wallets.map((w) => `🪙 <b>${esc(w.asset)}</b>\n<code>${esc(w.address)}</code>`),
+            ...payMethods.map(
+                (m) =>
+                    `💸 <b>${esc(m.method)}</b>${m.note ? ` · ${esc(m.note)}` : ''}\n<code>${esc(m.account)}</code>`,
+            ),
         ].join('\n\n');
         await this.repository.setCustomerState(customer.id, 'awaiting_receipt', amount);
         await ctx.tg.sendMessage(
             customer.chatId,
-            M[ctx.lang].topupInstructions(formatToman(amount), destinations),
+            ctx.t('topupInstructions', {
+                amount: formatToman(amount, ctx.t),
+                destinations: new Html(destinations),
+            }),
             { parseMode: 'HTML' },
         );
     }
@@ -550,22 +699,19 @@ export class BrokerBotHandler {
     ) {
         const plan = await this.repository.getPlan(ctx.broker.uuid, planId);
         if (!plan || !this.canSell(ctx.broker)) {
-            await this.showScreen(ctx, screen, M[ctx.lang].unavailable, [
-                this.backRow(ctx.lang, 'menu'),
-            ]);
+            await this.showScreen(ctx, screen, ctx.t('unavailable'), [this.backRow(ctx, 'menu')]);
             return;
         }
-        const text = `${planDetails(plan, ctx.lang)}\n\n${M[ctx.lang].reviewBalance(formatToman(customer.wallet))}`;
-        await this.showScreen(ctx, screen, text, [
+        await this.showScreen(ctx, screen, planReview(plan, customer.wallet, ctx.t), [
             [
                 {
-                    text: M[ctx.lang].btnBuyWallet,
+                    text: ctx.t('btnBuyWallet'),
                     // The terms catch plan edits since this screen; the key makes it pay once.
                     callback_data: `pur:${plan.id}:${planTerms(plan)}:${randomBytes(4).toString('hex')}`,
                     style: 'primary',
                 },
             ],
-            this.backRow(ctx.lang, 'buy'),
+            this.backRow(ctx, 'buy'),
         ]);
     }
 
@@ -579,7 +725,7 @@ export class BrokerBotHandler {
         checkoutKey: string | undefined,
     ) {
         const unavailable = () =>
-            this.showScreen(ctx, screen, M[ctx.lang].unavailable, [this.backRow(ctx.lang, 'menu')]);
+            this.showScreen(ctx, screen, ctx.t('unavailable'), [this.backRow(ctx, 'menu')]);
 
         const plan = await this.repository.getPlan(ctx.broker.uuid, planId);
         // ctx.broker is fresh per update, but re-read anyway: the purchase must see the latest
@@ -594,61 +740,123 @@ export class BrokerBotHandler {
             await this.showPlanReview(ctx, screen, customer, plan.id);
             return;
         }
-        const squadAllowed = broker.internalSquads.some((s) => s.uuid === plan.squadUuid);
-        const usersLimitReached =
-            broker.usersLimit !== null && broker.usersCount >= broker.usersLimit;
-        if (!plan.squadUuid || !squadAllowed || usersLimitReached) {
+        if (!plan.squadUuids.length || !this.hasRoomFor(broker, plan.squadUuids)) {
             await unavailable();
             return;
         }
 
-        let orderId: null | number;
+        let purchase: { orderId: number; user: CreatedUser } | null;
         try {
-            orderId = await this.repository.payForPlan({
-                brokerUuid: broker.uuid,
-                customerId: customer.id,
-                planId: plan.id,
-                amount: plan.price,
-                checkoutKey,
-            });
+            purchase = await this.completeWalletPurchase(ctx, broker, customer, plan, checkoutKey);
         } catch (error) {
             // This review screen was paid already (a double tap): that purchase answered.
             if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
                 return;
             }
+            if (error instanceof SubscriptionCreationFailed) {
+                await unavailable();
+                return;
+            }
             throw error;
         }
-        if (orderId === null) {
+        if (!purchase) {
             await this.showScreen(
                 ctx,
                 screen,
-                M[ctx.lang].insufficient(formatToman(customer.wallet), formatToman(plan.price)),
+                ctx.t('insufficient', {
+                    balance: formatToman(customer.wallet, ctx.t),
+                    price: formatToman(plan.price, ctx.t),
+                }),
                 [
-                    [{ text: M[ctx.lang].btnCharge, callback_data: 'charge', style: 'primary' }],
-                    this.backRow(ctx.lang, `plan:${plan.id}`),
+                    [{ text: ctx.t('btnCharge'), callback_data: 'charge', style: 'primary' }],
+                    this.backRow(ctx, `plan:${plan.id}`),
                 ],
             );
             return;
         }
 
+        const { orderId, user } = purchase;
+        this.usersService.publishCreatedUser(user);
+        this.log(
+            ctx,
+            ctx.st('logPurchase', {
+                id: orderId,
+                customer: who(customer),
+                plan: plan.title,
+                amount: formatToman(plan.price, ctx.st),
+            }),
+        );
+        await this.showScreen(
+            ctx,
+            screen,
+            ctx.t('approved', { link: this.subUrl(user.shortUuid) }),
+            [this.backRow(ctx, 'menu')],
+        );
+    }
+
+    @Transactional()
+    private async completeWalletPurchase(
+        ctx: Ctx,
+        broker: BrokerEntity,
+        customer: BrokerBotCustomers,
+        plan: BrokerBotPlans,
+        checkoutKey: string,
+    ): Promise<{ orderId: number; user: CreatedUser } | null> {
+        const orderId = await this.repository.payForPlan({
+            brokerUuid: broker.uuid,
+            customerId: customer.id,
+            planId: plan.id,
+            amount: plan.price,
+            checkoutKey,
+        });
+        if (orderId === null) return null;
+
+        const user = await this.createSubscription(ctx, broker, customer, plan, true);
+        if (!user) throw new SubscriptionCreationFailed();
+
+        await this.repository.completePlanOrder(orderId, user.id);
+        return { orderId, user };
+    }
+
+    /** The broker may hand out one more subscription on all these squads. */
+    private hasRoomFor(broker: BrokerEntity, squadUuids: string[]): boolean {
+        return (
+            squadUuids.every((uuid) => broker.internalSquads.some((s) => s.uuid === uuid)) &&
+            (broker.usersLimit === null || broker.usersCount < broker.usersLimit)
+        );
+    }
+
+    /** The customer's subscription user. Null, with the error in the logs topic, when it fails. */
+    private async createSubscription(
+        ctx: Ctx,
+        broker: BrokerEntity,
+        customer: BrokerBotCustomers,
+        spec: Trial,
+        deferEvents = false,
+    ): Promise<CreatedUser | null> {
         const prefix = `${broker.username}_`;
         // Keep the `<broker>_` prefix createUser requires; trim the Telegram id first, the random tail last.
         const username =
             prefix +
             `${customer.tgUserId}_${randomBytes(3).toString('hex')}`.slice(-(36 - prefix.length));
-
-        // Step 1: create the user. If THIS fails there is no subscription, so refund.
         let created: Awaited<ReturnType<UsersService['createUser']>>;
         try {
             created = await this.usersService.createUser(
                 CreateUserCommand.RequestBodySchema.parse({
                     username,
-                    expireAt: new Date(Date.now() + plan.durationDays * 86_400_000).toISOString(),
-                    trafficLimitBytes: Math.round(plan.trafficGb * GB_BYTES),
-                    activeInternalSquads: [plan.squadUuid],
+                    expireAt: new Date(
+                        Date.now() +
+                            (spec.durationHours
+                                ? spec.durationHours * HOUR_MS
+                                : spec.durationDays * DAY_MS),
+                    ).toISOString(),
+                    trafficLimitBytes: Math.round(spec.trafficGb * GB_BYTES),
+                    activeInternalSquads: spec.squadUuids,
+                    ipLimit: spec.ipLimit,
                     telegramId: Number(customer.tgUserId),
                 }),
                 broker,
+                deferEvents,
             );
         } catch (error) {
             created = {
@@ -656,45 +864,192 @@ export class BrokerBotHandler {
                 message: error instanceof Error ? error.message : String(error),
             };
         }
-        if (!created.isOk) {
-            await this.repository.refundPlanOrder(orderId, customer.id, plan.price);
-            await unavailable();
-            this.log(ctx, M[ctx.lang].logError(created.message ?? 'create user failed'));
+        if (created.isOk) return created.response;
+        this.log(ctx, ctx.st('logError', { error: created.message ?? 'create user failed' }));
+        return null;
+    }
+
+    // ----------------------- free trial & invites -----------------------
+
+    /** The free trial offer, or why this customer can't have it. */
+    private async showTrial(ctx: Ctx, screen: Screen, customer: BrokerBotCustomers) {
+        const trial = activeTrial(ctx.bot);
+        if (!trial || !this.canSell(ctx.broker)) {
+            await this.showScreen(ctx, screen, ctx.t('unavailable'), [this.backRow(ctx, 'menu')]);
             return;
         }
-        const user = created.response;
-
-        // Step 2: the subscription IS live now; never refund from here on.
-        await this.repository.completePlanOrder(orderId, user.id);
-        await this.showScreen(ctx, screen, M[ctx.lang].approved(this.subUrl(user.shortUuid)), [
-            this.backRow(ctx.lang, 'menu'),
+        if (await this.repository.hasClaimedTrial(customer.id, trialKey(ctx.bot))) {
+            await this.showScreen(ctx, screen, ctx.t('trialUsed'), [
+                [{ text: ctx.t('menuBuy'), callback_data: 'buy', style: 'primary' }],
+                this.backRow(ctx, 'menu'),
+            ]);
+            return;
+        }
+        if (await this.isTrialSoldOut(ctx.broker.uuid, trial)) {
+            await this.showTrialSoldOut(ctx, screen);
+            return;
+        }
+        await this.showScreen(ctx, screen, trialReview(trial, ctx.t), [
+            [{ text: ctx.t('btnTrialClaim'), callback_data: 'trialgo', style: 'success' }],
+            this.backRow(ctx, 'menu'),
         ]);
     }
 
+    /** One free subscription per customer and round; the claim is given back if creation fails. */
+    private async claimTrial(ctx: Ctx, screen: Screen, customer: BrokerBotCustomers) {
+        const unavailable = () =>
+            this.showScreen(ctx, screen, ctx.t('unavailable'), [this.backRow(ctx, 'menu')]);
+        const trial = activeTrial(ctx.bot);
+        // Re-read for the latest quota and users count, as a purchase does.
+        const broker = (await this.getBroker(ctx.broker.uuid)) ?? ctx.broker;
+        if (!trial || !this.canSell(broker) || !this.hasRoomFor(broker, trial.squadUuids)) {
+            await unavailable();
+            return;
+        }
+        // Updates of one bot are handled one at a time, so two claims can't both pass the cap.
+        if (await this.isTrialSoldOut(broker.uuid, trial)) {
+            await this.showTrialSoldOut(ctx, screen);
+            return;
+        }
+        let orderId: number;
+        try {
+            orderId = await this.repository.createTrialOrder(
+                broker.uuid,
+                customer.id,
+                trialKey(ctx.bot),
+            );
+        } catch (error) {
+            // Claimed already this round, by a double tap or an old screen: that one answered.
+            if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+                return;
+            }
+            throw error;
+        }
+        const user = await this.createSubscription(ctx, broker, customer, trial);
+        if (!user) {
+            await this.repository.releaseTrialOrder(orderId);
+            await unavailable();
+            return;
+        }
+        await this.repository.completePlanOrder(orderId, user.id);
+        this.log(ctx, ctx.st('logTrial', { customer: who(customer) }));
+        await this.showScreen(
+            ctx,
+            screen,
+            ctx.t('approved', { link: this.subUrl(user.shortUuid) }),
+            [this.backRow(ctx, 'menu')],
+        );
+    }
+
+    private async isTrialSoldOut(brokerUuid: string, trial: Trial): Promise<boolean> {
+        if (!trial.dailyLimit) return false;
+        return (await this.repository.countTrialsSince(brokerUuid, utcToday())) >= trial.dailyLimit;
+    }
+
+    private async showTrialSoldOut(ctx: Ctx, screen: Screen) {
+        await this.showScreen(ctx, screen, ctx.t('trialSoldOut'), [
+            [{ text: ctx.t('menuBuy'), callback_data: 'buy', style: 'primary' }],
+            this.backRow(ctx, 'menu'),
+        ]);
+    }
+
+    /**
+     * Deletes trial users a day after they expire, for bots with trial.deleteExpired on (read
+     * from the stored settings, so it keeps going while the trial itself is switched off).
+     */
+    public async deleteExpiredTrials(): Promise<void> {
+        const due = await this.repository.listExpiredTrialUsers(new Date(Date.now() - DAY_MS));
+        for (const [brokerUuid, userIds] of due) {
+            const broker = await this.getBroker(brokerUuid);
+            if (!broker) continue;
+            // Scoped to the broker: a user moved to someone else is skipped, not deleted.
+            const result = await this.usersService.bulkDeleteUsersByUserId(userIds, broker);
+            if (!result.isOk) {
+                this.logger.warn(
+                    `Broker ${brokerUuid}: expired trials not deleted: ${result.message}`,
+                );
+            }
+        }
+    }
+
+    /** The customer's invite link and what it has earned them. */
+    private async showInvite(ctx: Ctx, screen: Screen, customer: BrokerBotCustomers) {
+        if (!(ctx.bot.referralPercent > 0) || !ctx.bot.botUsername) {
+            await this.editMenu(ctx, screen);
+            return;
+        }
+        const { invited, earned } = await this.repository.getReferralSummary(customer.id);
+        const link = `https://t.me/${ctx.bot.botUsername}?start=ref${customer.id}`;
+        await this.showScreen(
+            ctx,
+            screen,
+            ctx.t('inviteScreen', {
+                inviteLink: link,
+                percent: ctx.bot.referralPercent,
+                invited,
+                earned: formatToman(earned, ctx.t),
+            }),
+            [
+                // Opens Telegram's share sheet with the link filled in.
+                [
+                    {
+                        text: ctx.t('menuInvite'),
+                        url: `https://t.me/share/url?url=${encodeURIComponent(link)}`,
+                    },
+                ],
+                this.backRow(ctx, 'menu'),
+            ],
+        );
+    }
+
+    /** Tells the referrer what a friend's top-up (`topupId`) earned them, and the staff. */
+    private async notifyReward(
+        ctx: Ctx,
+        reward: TopupApproval['reward'],
+        topupId: number,
+    ): Promise<void> {
+        if (!reward) return;
+        const referrer = await this.repository.getCustomerById(ctx.broker.uuid, reward.customerId);
+        if (!referrer) return;
+        const t = this.tFor(ctx, referrer);
+        await ctx.tg
+            .sendMessage(
+                referrer.chatId,
+                t('referralReward', {
+                    amount: formatToman(reward.amount, t),
+                    balance: formatToman(reward.balance, t),
+                }),
+                { parseMode: 'HTML' },
+            )
+            .catch(() => {});
+        this.log(
+            ctx,
+            ctx.st('logReward', {
+                amount: formatToman(reward.amount, ctx.st),
+                referrer: who(referrer),
+                id: topupId,
+            }),
+        );
+    }
+
     /** Staff review message for a top-up. */
-    private topupDetails(order: BrokerBotOrders, customer: BrokerBotCustomers, lang: Lang): string {
-        const who = [customer.name, customer.username ? '@' + customer.username : '']
-            .filter(Boolean)
-            .join(' ');
-        return [
-            `💰 ${M[lang].lblTopup} #${order.id}`,
-            `👤 ${who || customer.tgUserId} · id ${customer.tgUserId}`,
-            `💵 ${formatToman(order.amount)}`,
-        ].join('\n');
+    private topupDetails(ctx: Ctx, order: BrokerBotOrders, customer: BrokerBotCustomers): string {
+        return ctx.st('topupReview', {
+            id: order.id,
+            customer: who(customer),
+            tgId: customer.tgUserId,
+            amount: formatToman(order.amount, ctx.st),
+        });
     }
 
     private async showPlans(ctx: Ctx, screen: Screen) {
         if (!this.canSell(ctx.broker)) {
-            await this.showScreen(ctx, screen, M[ctx.lang].unavailable, [
-                this.backRow(ctx.lang, 'menu'),
-            ]);
+            await this.showScreen(ctx, screen, ctx.t('unavailable'), [this.backRow(ctx, 'menu')]);
             return;
         }
         const plans = await this.repository.listPlans(ctx.broker.uuid, true);
         if (plans.length === 0) {
-            await this.showScreen(ctx, screen, M[ctx.lang].noPlans, [
-                this.backRow(ctx.lang, 'menu'),
-            ]);
+            await this.showScreen(ctx, screen, ctx.t('noPlans'), [this.backRow(ctx, 'menu')]);
             return;
         }
 
@@ -705,28 +1060,25 @@ export class BrokerBotHandler {
 
         if (catsWithPlans.length === 0) {
             const keyboard: InlineKeyboard = plans.map((p) => [
-                { text: planLabel(p, ctx.lang), callback_data: `plan:${p.id}` },
+                { text: planLabel(p, ctx.t), callback_data: `plan:${p.id}` },
             ]);
-            keyboard.push(this.backRow(ctx.lang, 'menu'));
-            await this.showScreen(ctx, screen, M[ctx.lang].choosePlan, keyboard);
+            keyboard.push(this.backRow(ctx, 'menu'));
+            await this.showScreen(ctx, screen, ctx.t('choosePlan'), keyboard);
             return;
         }
 
         const keyboard: InlineKeyboard = catsWithPlans.map((c) => [
             { text: c.title, callback_data: `cat:${c.id}` },
         ]);
-        if (hasUncategorized)
-            keyboard.push([{ text: M[ctx.lang].catOther, callback_data: 'cat:0' }]);
-        keyboard.push(this.backRow(ctx.lang, 'menu'));
-        await this.showScreen(ctx, screen, M[ctx.lang].chooseCategory, keyboard);
+        if (hasUncategorized) keyboard.push([{ text: ctx.t('catOther'), callback_data: 'cat:0' }]);
+        keyboard.push(this.backRow(ctx, 'menu'));
+        await this.showScreen(ctx, screen, ctx.t('chooseCategory'), keyboard);
     }
 
     /** Plans within one category (0 = uncategorized). */
     private async showCategoryPlans(ctx: Ctx, screen: Screen, catId: number) {
         if (!this.canSell(ctx.broker)) {
-            await this.showScreen(ctx, screen, M[ctx.lang].unavailable, [
-                this.backRow(ctx.lang, 'menu'),
-            ]);
+            await this.showScreen(ctx, screen, ctx.t('unavailable'), [this.backRow(ctx, 'menu')]);
             return;
         }
         const plans = await this.repository.listPlans(ctx.broker.uuid, true);
@@ -734,16 +1086,14 @@ export class BrokerBotHandler {
             catId === 0 ? p.categoryId === null : p.categoryId === catId,
         );
         if (inCat.length === 0) {
-            await this.showScreen(ctx, screen, M[ctx.lang].noPlans, [
-                this.backRow(ctx.lang, 'buy'),
-            ]);
+            await this.showScreen(ctx, screen, ctx.t('noPlans'), [this.backRow(ctx, 'buy')]);
             return;
         }
         const keyboard: InlineKeyboard = inCat.map((p) => [
-            { text: planLabel(p, ctx.lang), callback_data: `plan:${p.id}` },
+            { text: planLabel(p, ctx.t), callback_data: `plan:${p.id}` },
         ]);
-        keyboard.push(this.backRow(ctx.lang, 'buy'));
-        await this.showScreen(ctx, screen, M[ctx.lang].choosePlan, keyboard);
+        keyboard.push(this.backRow(ctx, 'buy'));
+        await this.showScreen(ctx, screen, ctx.t('choosePlan'), keyboard);
     }
 
     private async showSubscriptions(
@@ -760,15 +1110,17 @@ export class BrokerBotHandler {
             SUBS_PER_PAGE + 1,
         );
         if (orders.length === 0) {
-            await this.showScreen(ctx, screen, M[ctx.lang].subsEmpty, [
-                this.backRow(ctx.lang, 'menu'),
-            ]);
+            await this.showScreen(ctx, screen, ctx.t('subsEmpty'), [this.backRow(ctx, 'menu')]);
             return;
         }
         // One button per subscription; details and links open on tap.
         const keyboard: InlineKeyboard = orders.slice(0, SUBS_PER_PAGE).map((o, i) => [
             {
-                text: o.plan?.title ?? M[ctx.lang].subFallback(page * SUBS_PER_PAGE + i + 1),
+                text:
+                    o.plan?.title ??
+                    (o.kind === 'trial'
+                        ? ctx.t('menuTrial')
+                        : ctx.t('subFallback', { number: page * SUBS_PER_PAGE + i + 1 })),
                 callback_data: `sub:${o.id}`,
             },
         ]);
@@ -778,8 +1130,8 @@ export class BrokerBotHandler {
             pager.push({ text: '▶️', callback_data: `mysubs:${page + 1}` });
         }
         if (pager.length) keyboard.push(pager);
-        keyboard.push(this.backRow(ctx.lang, 'menu'));
-        await this.showScreen(ctx, screen, M[ctx.lang].subsPick, keyboard);
+        keyboard.push(this.backRow(ctx, 'menu'));
+        await this.showScreen(ctx, screen, ctx.t('subsPick'), keyboard);
     }
 
     /** One subscription: usage, expiry, the subscription link and every config. */
@@ -796,9 +1148,7 @@ export class BrokerBotHandler {
             order.status !== 'approved' ||
             !order.userId
         ) {
-            await this.showScreen(ctx, screen, M[ctx.lang].subsEmpty, [
-                this.backRow(ctx.lang, 'mysubs'),
-            ]);
+            await this.showScreen(ctx, screen, ctx.t('subsEmpty'), [this.backRow(ctx, 'mysubs')]);
             return;
         }
         const result = await this.usersService.getUserByUniqueFields(
@@ -806,9 +1156,7 @@ export class BrokerBotHandler {
             ctx.broker,
         );
         if (!result.isOk) {
-            await this.showScreen(ctx, screen, M[ctx.lang].unavailable, [
-                this.backRow(ctx.lang, 'mysubs'),
-            ]);
+            await this.showScreen(ctx, screen, ctx.t('unavailable'), [this.backRow(ctx, 'mysubs')]);
             return;
         }
         const u = result.response;
@@ -823,15 +1171,20 @@ export class BrokerBotHandler {
             ? await this.repository.getPlan(ctx.broker.uuid, order.planId)
             : null;
         const detail = (keys: string[]) =>
-            M[ctx.lang].subDetail({
-                name: plan?.title ?? u.username,
+            ctx.t('subDetail', {
+                name: plan?.title ?? (order.kind === 'trial' ? ctx.t('menuTrial') : u.username),
                 used: formatBytes(Number(u.userTraffic.usedTrafficBytes)),
                 limit: u.trafficLimitBytes
                     ? formatBytes(Number(u.trafficLimitBytes))
-                    : M[ctx.lang].unlimited,
-                exp: new Date(u.expireAt).toLocaleDateString(),
-                subUrl: this.subUrl(u.shortUuid),
-                links: keys,
+                    : ctx.t('unlimited'),
+                expires: new Date(u.expireAt).toLocaleDateString(ctx.lang),
+                link: this.subUrl(u.shortUuid),
+                configs: new Html(
+                    keys.length
+                        ? `\n\n${ctx.t('subConfigs')}\n` +
+                              keys.map((l) => `<code>${esc(l)}</code>`).join('\n')
+                        : '',
+                ),
             });
         // Many long keys overflow Telegram's limit; the subscription link alone always fits.
         let text = detail(links);
@@ -839,7 +1192,7 @@ export class BrokerBotHandler {
             links = links.slice(0, -1);
             text = detail(links);
         }
-        await this.showScreen(ctx, screen, text, [this.backRow(ctx.lang, 'mysubs')]);
+        await this.showScreen(ctx, screen, text, [this.backRow(ctx, 'mysubs')]);
     }
 
     // ----------------------- callbacks -----------------------
@@ -854,11 +1207,11 @@ export class BrokerBotHandler {
         }
     }
 
-    private reviewKeyboard(orderId: number): InlineKeyboard {
+    private reviewKeyboard(ctx: Ctx, orderId: number): InlineKeyboard {
         return [
             [
-                { text: '✅ Approve', callback_data: `ap:${orderId}`, style: 'success' },
-                { text: '❌ Reject', callback_data: `rj:${orderId}`, style: 'danger' },
+                { text: ctx.st('btnApprove'), callback_data: `ap:${orderId}`, style: 'success' },
+                { text: ctx.st('btnReject'), callback_data: `rj:${orderId}`, style: 'danger' },
             ],
         ];
     }
@@ -870,8 +1223,14 @@ export class BrokerBotHandler {
         try {
             if (customer) {
                 // Keep the original details verbatim; add the status two lines below.
-                const text = `${this.topupDetails(order, customer, ctx.lang)}\n\n${statusLine}`;
-                await ctx.tg.editMessageText(ctx.bot.groupId, order.reviewMessageId, text);
+                const text = `${this.topupDetails(ctx, order, customer)}\n\n${statusLine}`;
+                await ctx.tg.editMessageText(
+                    ctx.bot.groupId,
+                    order.reviewMessageId,
+                    text,
+                    undefined,
+                    'HTML',
+                );
             } else {
                 await ctx.tg.editMessageReplyMarkup(ctx.bot.groupId, order.reviewMessageId, []);
             }
@@ -891,10 +1250,10 @@ export class BrokerBotHandler {
             // misconfiguration never locks every customer out, and say so in the logs.
             this.log(
                 ctx,
-                M[ctx.lang].logMembership(
-                    chatRef,
-                    error instanceof Error ? error.message : String(error),
-                ),
+                ctx.st('logMembership', {
+                    channel: chatRef,
+                    error: error instanceof Error ? error.message : String(error),
+                }),
             );
             return true;
         }
@@ -914,10 +1273,10 @@ export class BrokerBotHandler {
         const pending = await this.pendingChannels(ctx, userId);
         if (pending.length === 0) return true;
         const keyboard: InlineKeyboard = pending.map((c) => [
-            { text: `📣 ${c.title}`, url: c.url },
+            { text: ctx.t('btnJoinChannel', { title: c.title }), url: c.url },
         ]);
-        keyboard.push([{ text: M[ctx.lang].btnJoined, callback_data: 'joined', style: 'success' }]);
-        await ctx.tg.sendMessage(chatId, M[ctx.lang].joinRequired, { keyboard, parseMode: 'HTML' });
+        keyboard.push([{ text: ctx.t('btnJoined'), callback_data: 'joined', style: 'success' }]);
+        await ctx.tg.sendMessage(chatId, ctx.t('joinRequired'), { keyboard, parseMode: 'HTML' });
         return false;
     }
 
@@ -934,11 +1293,11 @@ export class BrokerBotHandler {
                 return;
             }
             if (!(await this.isGroupAdmin(ctx, cq.from.id))) {
-                await ctx.tg.answerCallbackQuery(cq.id, 'Only group admins can do that.');
+                await ctx.tg.answerCallbackQuery(cq.id, ctx.st('alertAdminsOnly'));
                 return;
             }
             if (!this.canDecide(ctx.broker)) {
-                await ctx.tg.answerCallbackQuery(cq.id, 'This broker account is inactive.');
+                await ctx.tg.answerCallbackQuery(cq.id, ctx.st('alertInactive'));
                 return;
             }
             await this.handleStaffCallback(ctx, cq, action, Number(parts[1]));
@@ -967,7 +1326,7 @@ export class BrokerBotHandler {
                 else await this.sendMenu(ctx, customer.chatId);
                 await ctx.tg.answerCallbackQuery(cq.id);
             } else {
-                await ctx.tg.answerCallbackQuery(cq.id, M[ctx.lang].notJoinedYet);
+                await ctx.tg.answerCallbackQuery(cq.id, ctx.t('notJoinedYet'));
             }
             return;
         }
@@ -1002,6 +1361,12 @@ export class BrokerBotHandler {
                 parts[2],
                 parts[3],
             );
+        } else if (action === 'trial') {
+            await this.showTrial(ctx, screen, customer);
+        } else if (action === 'trialgo') {
+            await this.claimTrial(ctx, screen, customer);
+        } else if (action === 'invite') {
+            await this.showInvite(ctx, screen, customer);
         } else if (action === 'wallet') {
             // Back from "send the amount": typed text is no longer an amount.
             if (customer.state === 'awaiting_topup_amount') {
@@ -1019,9 +1384,19 @@ export class BrokerBotHandler {
             await this.showScreen(
                 ctx,
                 screen,
-                ctx.bot.groupId ? M[ctx.lang].supportPrompt : M[ctx.lang].supportUnavailable,
-                [this.backRow(ctx.lang, 'menu')],
+                ctx.bot.groupId ? ctx.t('supportPrompt') : ctx.t('supportUnavailable'),
+                [this.backRow(ctx, 'menu')],
             );
+        } else if (action === 'lang') {
+            const picked = parts[1];
+            if (isLang(picked) && botLangs(ctx.bot).includes(picked)) {
+                await this.repository.setCustomerLang(customer.id, picked);
+                ctx.lang = picked;
+                ctx.t = translator(ctx.bot.texts, picked);
+                await this.editMenu(ctx, screen);
+            } else {
+                await this.showLanguages(ctx, screen);
+            }
         }
         await ctx.tg.answerCallbackQuery(cq.id);
     }
@@ -1030,7 +1405,7 @@ export class BrokerBotHandler {
         const order = await this.repository.getOrder(ctx.broker.uuid, orderId);
         const reviewMsgId = cq.message?.message_id;
         if (!order || order.status !== 'pending') {
-            await ctx.tg.answerCallbackQuery(cq.id, 'Already handled.');
+            await ctx.tg.answerCallbackQuery(cq.id, ctx.st('alertHandled'));
             return;
         }
 
@@ -1039,10 +1414,10 @@ export class BrokerBotHandler {
             if (reviewMsgId) {
                 await ctx.tg.editMessageReplyMarkup(ctx.bot.groupId!, reviewMsgId, [
                     [
-                        { text: 'Reject (no reason)', callback_data: `rjno:${orderId}` },
-                        { text: 'Reject with reason', callback_data: `rjwhy:${orderId}` },
+                        { text: ctx.st('btnRejectNoReason'), callback_data: `rjno:${orderId}` },
+                        { text: ctx.st('btnRejectWithReason'), callback_data: `rjwhy:${orderId}` },
                     ],
-                    [{ text: '⬅︎ Back', callback_data: `rjback:${orderId}` }],
+                    [{ text: ctx.st('btnStaffBack'), callback_data: `rjback:${orderId}` }],
                 ]);
             }
             await ctx.tg.answerCallbackQuery(cq.id);
@@ -1054,7 +1429,7 @@ export class BrokerBotHandler {
                 await ctx.tg.editMessageReplyMarkup(
                     ctx.bot.groupId!,
                     reviewMsgId,
-                    this.reviewKeyboard(orderId),
+                    this.reviewKeyboard(ctx, orderId),
                 );
             }
             await ctx.tg.answerCallbackQuery(cq.id);
@@ -1063,13 +1438,17 @@ export class BrokerBotHandler {
 
         if (action === 'rjno') {
             if (!(await this.repository.rejectOrder(orderId, null))) {
-                await ctx.tg.answerCallbackQuery(cq.id, 'Already handled.');
+                await ctx.tg.answerCallbackQuery(cq.id, ctx.st('alertHandled'));
                 return;
             }
-            await this.finalizeReview(ctx, order, M[ctx.lang].rejectedBy(adminName(cq.from)));
-            await this.dmCustomer(ctx, order.customerId, M[ctx.lang].topupRejected);
-            this.log(ctx, M[ctx.lang].logRejected(orderId));
-            await ctx.tg.answerCallbackQuery(cq.id, 'Rejected.');
+            await this.finalizeReview(
+                ctx,
+                order,
+                ctx.st('rejectedBy', { admin: adminName(cq.from) }),
+            );
+            await this.dmCustomer(ctx, order.customerId, (t) => t('topupRejected'));
+            this.log(ctx, ctx.st('logRejected', { id: orderId }));
+            await ctx.tg.answerCallbackQuery(cq.id, ctx.st('alertRejected'));
             return;
         }
 
@@ -1078,11 +1457,11 @@ export class BrokerBotHandler {
             if (ctx.bot.reviewTopicId) {
                 await ctx.tg.sendMessage(
                     ctx.bot.groupId!,
-                    `Reply here with the rejection reason for receipt #${orderId}.`,
-                    { messageThreadId: ctx.bot.reviewTopicId },
+                    ctx.st('askRejectReason', { id: orderId }),
+                    { messageThreadId: ctx.bot.reviewTopicId, parseMode: 'HTML' },
                 );
             }
-            await ctx.tg.answerCallbackQuery(cq.id, 'Send the reason as a reply.');
+            await ctx.tg.answerCallbackQuery(cq.id, ctx.st('alertSendReason'));
             return;
         }
 
@@ -1092,35 +1471,56 @@ export class BrokerBotHandler {
                 order.customerId,
             );
             if (!customer || order.kind !== 'topup' || !order.amount) {
-                await ctx.tg.answerCallbackQuery(cq.id, 'Nothing to approve.');
+                await ctx.tg.answerCallbackQuery(cq.id, ctx.st('alertNothing'));
                 return;
             }
-            const balance = await this.repository.approveTopup(order);
-            if (balance === null) {
-                await ctx.tg.answerCallbackQuery(cq.id, 'Already handled.');
+            const approval = await this.repository.approveTopup(order);
+            if (approval === null) {
+                await ctx.tg.answerCallbackQuery(cq.id, ctx.st('alertHandled'));
                 return;
             }
-            await this.finalizeReview(ctx, order, M[ctx.lang].approvedBy(adminName(cq.from)));
+            await this.finalizeReview(
+                ctx,
+                order,
+                ctx.st('approvedBy', { admin: adminName(cq.from) }),
+            );
             await ctx.tg.sendMessage(
                 customer.chatId,
-                M[ctx.lang].walletCharged(formatToman(order.amount), formatToman(balance)),
+                this.walletCharged(this.tFor(ctx, customer), order.amount, approval.balance),
                 { parseMode: 'HTML' },
             );
-            this.log(
-                ctx,
-                M[ctx.lang].logTopup(
-                    orderId,
-                    formatToman(order.amount),
-                    customer.name ?? customer.tgUserId,
-                ),
-            );
-            await ctx.tg.answerCallbackQuery(cq.id, 'Approved — wallet credited.');
+            this.logTopup(ctx, orderId, order.amount, customer);
+            await this.notifyReward(ctx, approval.reward, orderId);
+            await ctx.tg.answerCallbackQuery(cq.id, ctx.st('alertApproved'));
         }
     }
 
-    private async dmCustomer(ctx: Ctx, customerId: number, text: string): Promise<void> {
+    /** A message to a customer, in their language. */
+    private async dmCustomer(ctx: Ctx, customerId: number, text: (t: T) => string): Promise<void> {
         const c = await this.repository.getCustomerById(ctx.broker.uuid, customerId);
-        if (c) await ctx.tg.sendMessage(c.chatId, text, { parseMode: 'HTML' }).catch(() => {});
+        if (c) {
+            await ctx.tg
+                .sendMessage(c.chatId, text(this.tFor(ctx, c)), { parseMode: 'HTML' })
+                .catch(() => {});
+        }
+    }
+
+    private walletCharged(t: T, amount: bigint | number, balance: bigint | number): string {
+        return t('walletCharged', {
+            amount: formatToman(amount, t),
+            balance: formatToman(balance, t),
+        });
+    }
+
+    private logTopup(ctx: Ctx, orderId: number, amount: number, customer: BrokerBotCustomers) {
+        this.log(
+            ctx,
+            ctx.st('logTopup', {
+                id: orderId,
+                amount: formatToman(amount, ctx.st),
+                customer: customer.name ?? customer.tgUserId,
+            }),
+        );
     }
 
     // ----------------------- group ID finder -----------------------
@@ -1129,10 +1529,94 @@ export class BrokerBotHandler {
         const chatId = String(msg.chat.id);
         await this.repository.recordGroupFind(ctx.broker.uuid, chatId, msg.chat.title ?? null);
         await ctx.tg
-            .sendMessage(chatId, M[ctx.lang].groupCaptured(chatId), {
+            .sendMessage(chatId, ctx.st('groupCaptured', { id: chatId }), {
                 messageThreadId: msg.message_thread_id,
+                parseMode: 'HTML',
             })
             .catch(() => {});
+    }
+
+    // ----------------------- stats -----------------------
+
+    private statsPeriod(t: T, period: string, p: StatsWindow): string {
+        return t('statsPeriod', {
+            period: new Html(period),
+            newCustomers: p.newCustomers,
+            active: p.activeCustomers,
+            referrals: p.referrals,
+            sales: p.sales,
+            salesAmount: formatToman(p.salesAmount, t),
+            topups: p.topups,
+            topupsAmount: formatToman(p.topupsAmount, t),
+            rejected: p.rejectedTopups,
+            trials: p.trials,
+            rewards: formatToman(p.rewards, t),
+        });
+    }
+
+    private statsTotals(t: T, r: BotReport): string {
+        return t('statsTotals', {
+            customers: r.totals.customers,
+            buyers: r.totals.buyers,
+            sales: r.totals.sales,
+            salesAmount: formatToman(r.totals.salesAmount, t),
+            wallets: formatToman(r.totals.walletTotal, t),
+            pending: r.totals.pendingReceipts,
+        });
+    }
+
+    /** /stats from a group admin: today, the last 7 and 30 days, and the totals. */
+    private async handleStats(ctx: Ctx, msg: TgMessage): Promise<void> {
+        if (ctx.broker.isDisabled || !(await this.isGroupAdmin(ctx, msg.from!.id))) return;
+        const r = await this.repository.getReport(ctx.broker.uuid, ctx.bot.statsResetAt);
+        const text = [
+            ctx.st('statsTitle'),
+            this.statsPeriod(ctx.st, ctx.st('statsToday'), r.today),
+            this.statsPeriod(ctx.st, ctx.st('stats7d'), r.week),
+            this.statsPeriod(ctx.st, ctx.st('stats30d'), r.month),
+            this.statsTotals(ctx.st, r),
+        ].join('\n\n');
+        await ctx.tg.sendMessage(ctx.bot.groupId!, text, {
+            messageThreadId: msg.message_thread_id,
+            parseMode: 'HTML',
+        });
+    }
+
+    /**
+     * Staff topics take their names from the texts editor, so groups made before a rename (like
+     * Logs → Stats) catches up. Best effort: needs the manage-topics right.
+     */
+    public async syncStaffTopics(tg: TelegramClient, bot: BrokerBots): Promise<void> {
+        if (!bot.groupId) return;
+        const t = translator(bot.texts, defaultLang(bot));
+        const topics = [
+            [bot.reviewTopicId, t('reviewTopicName')],
+            [bot.logsTopicId, t('logsTopicName')],
+        ] as const;
+        for (const [id, name] of topics) {
+            if (id) await tg.editForumTopic(bot.groupId, id, name).catch(() => {});
+        }
+    }
+
+    /**
+     * Yesterday's numbers in the staff group's stats topic (General before the topics exist), once
+     * per UTC day (`today`). Claimed first, so a bot without a group isn't retried all day.
+     */
+    public async postDailySummary(brokerUuid: string, today: Date): Promise<void> {
+        if (!(await this.repository.claimSummaryDay(brokerUuid, today))) return;
+        const ctx = await this.panelContext(brokerUuid);
+        if (!ctx?.bot.groupId || ctx.broker.isDisabled) return;
+        const r = await this.repository.getReport(brokerUuid, ctx.bot.statsResetAt);
+        const date = new Date(today.getTime() - DAY_MS).toISOString().slice(0, 10);
+        const text = [
+            this.statsPeriod(ctx.st, ctx.st('dailySummaryTitle', { date }), r.yesterday),
+            this.statsTotals(ctx.st, r),
+        ].join('\n\n');
+        await this.syncStaffTopics(ctx.tg, ctx.bot);
+        await ctx.tg.sendMessage(ctx.bot.groupId, text, {
+            messageThreadId: ctx.bot.logsTopicId ?? undefined,
+            parseMode: 'HTML',
+        });
     }
 
     // ----------------------- staff group messages -----------------------
@@ -1150,17 +1634,16 @@ export class BrokerBotHandler {
             if (orderId) {
                 const order = await this.repository.getOrder(ctx.broker.uuid, orderId);
                 if (order && (await this.repository.rejectOrder(orderId, msg.text))) {
+                    const reason = msg.text;
                     await this.finalizeReview(
                         ctx,
                         order,
-                        M[ctx.lang].rejectedByReason(adminName(msg.from), msg.text),
+                        ctx.st('rejectedByReason', { admin: adminName(msg.from), reason }),
                     );
-                    await this.dmCustomer(
-                        ctx,
-                        order.customerId,
-                        M[ctx.lang].rejectedReason(msg.text),
+                    await this.dmCustomer(ctx, order.customerId, (t) =>
+                        t('topupRejectedReason', { reason }),
                     );
-                    this.log(ctx, M[ctx.lang].logRejectedReason(orderId, msg.text));
+                    this.log(ctx, ctx.st('logRejectedReason', { id: orderId, reason }));
                 }
                 return;
             }
@@ -1171,7 +1654,11 @@ export class BrokerBotHandler {
         const customer = await this.repository.getCustomerByTicketTopic(ctx.broker.uuid, thread);
         if (customer && msg.text) {
             if (!(await this.isGroupAdmin(ctx, msg.from.id))) return;
-            await ctx.tg.sendMessage(customer.chatId, M[ctx.lang].support(msg.text));
+            await ctx.tg.sendMessage(
+                customer.chatId,
+                this.tFor(ctx, customer)('supportReply', { text: msg.text }),
+                { parseMode: 'HTML' },
+            );
         }
     }
 
@@ -1201,47 +1688,81 @@ export class BrokerBotHandler {
             return 'not_pending';
         }
 
+        const t = this.tFor(ctx, customer);
         if (decision === 'approve') {
-            const balance = await this.repository.approveTopup(order);
-            if (balance === null) return 'not_pending';
-            await this.finalizeReview(ctx, order, M[ctx.lang].approvedBy(who));
+            const approval = await this.repository.approveTopup(order);
+            if (approval === null) return 'not_pending';
+            await this.finalizeReview(ctx, order, ctx.st('approvedBy', { admin: who }));
             await ctx.tg
                 .sendMessage(
                     customer.chatId,
-                    M[ctx.lang].walletCharged(formatToman(order.amount), formatToman(balance)),
+                    this.walletCharged(t, order.amount, approval.balance),
                     { parseMode: 'HTML' },
                 )
                 .catch(() => {});
-            this.log(
-                ctx,
-                M[ctx.lang].logTopup(
-                    orderId,
-                    formatToman(order.amount),
-                    customer.name ?? customer.tgUserId,
-                ),
-            );
+            this.logTopup(ctx, orderId, order.amount, customer);
+            await this.notifyReward(ctx, approval.reward, orderId);
         } else {
             if (!(await this.repository.rejectOrder(orderId, reason ?? null))) return 'not_pending';
             await this.finalizeReview(
                 ctx,
                 order,
-                reason ? M[ctx.lang].rejectedByReason(who, reason) : M[ctx.lang].rejectedBy(who),
+                reason
+                    ? ctx.st('rejectedByReason', { admin: who, reason })
+                    : ctx.st('rejectedBy', { admin: who }),
             );
             await ctx.tg
                 .sendMessage(
                     customer.chatId,
-                    reason ? M[ctx.lang].rejectedReason(reason) : M[ctx.lang].topupRejected,
+                    reason ? t('topupRejectedReason', { reason }) : t('topupRejected'),
                     { parseMode: 'HTML' },
                 )
                 .catch(() => {});
             this.log(
                 ctx,
                 reason
-                    ? M[ctx.lang].logRejectedReason(orderId, reason)
-                    : M[ctx.lang].logRejected(orderId),
+                    ? ctx.st('logRejectedReason', { id: orderId, reason })
+                    : ctx.st('logRejected', { id: orderId }),
             );
         }
         return 'ok';
+    }
+
+    public async recoverPlanOrder(
+        brokerUuid: string,
+        brokerUsername: string,
+        orderId: number,
+        decision: 'approve' | 'reject',
+        userId?: number,
+    ): Promise<'approved' | 'refunded' | 'invalid_user' | 'not_pending'> {
+        const result = await this.repository.recoverPlanOrder(
+            brokerUuid,
+            brokerUsername,
+            orderId,
+            decision,
+            userId,
+        );
+        if (result.status !== 'approved') return result.status;
+
+        try {
+            const ctx = await this.panelContext(brokerUuid);
+            if (ctx) {
+                await ctx.tg
+                    .sendMessage(
+                        result.customer.chatId,
+                        this.tFor(ctx, result.customer)('approved', {
+                            link: this.subUrl(result.user.shortUuid),
+                        }),
+                        { parseMode: 'HTML' },
+                    )
+                    .catch(() => {});
+            }
+        } catch (error) {
+            this.logger.warn(
+                `Broker ${brokerUuid} recovered order ${orderId}, but customer notification failed: ${error instanceof Error ? error.message : error}`,
+            );
+        }
+        return 'approved';
     }
 
     /** Credits a customer's wallet by Telegram ID and tells them, best effort. */
@@ -1258,10 +1779,17 @@ export class BrokerBotHandler {
             await ctx.tg
                 .sendMessage(
                     customer.chatId,
-                    M[ctx.lang].walletCharged(formatToman(amount), formatToman(balance)),
+                    this.walletCharged(this.tFor(ctx, customer), amount, balance),
                     { parseMode: 'HTML' },
                 )
                 .catch(() => {});
+            this.log(
+                ctx,
+                ctx.st('logManualTopup', {
+                    amount: formatToman(amount, ctx.st),
+                    customer: who(customer),
+                }),
+            );
         }
         return { name: customer.name ?? customer.username ?? customer.tgUserId, balance };
     }

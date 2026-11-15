@@ -84,7 +84,6 @@ export class SubscriptionTemplateController {
         };
     }
 
-
     @Endpoint({
         command: GetSubscriptionTemplatesCommand,
         httpCode: HttpStatus.OK,
@@ -176,5 +175,4 @@ export class SubscriptionTemplateController {
             response: data,
         };
     }
-
 }

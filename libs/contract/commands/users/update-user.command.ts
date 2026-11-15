@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { REST_API, USERS_ROUTES } from '../../api';
 import { getEndpointDetails, RESET_PERIODS, USERS_STATUS } from '../../constants';
+import { MtprotoHexSchema } from '../../models/users.schema';
 import { UserResponseSchema } from './user.response';
 export namespace UpdateUserCommand {
     export const url = REST_API.USERS.UPDATE;
@@ -51,10 +52,22 @@ export namespace UpdateUserCommand {
             telegramId: z.number().nullish(),
             email: z.email().nullish(),
             hwidDeviceLimit: z.int().min(0).nullish(),
+            ipLimit: z
+                .int()
+                .min(1)
+                .max(100)
+                .nullish()
+                .describe('Optional. Simultaneous IPs across all nodes. Null removes the limit.'),
             activeInternalSquads: z.array(z.uuid()).optional(),
             externalSquadUuid: z
                 .optional(z.nullable(z.uuid()))
                 .describe('Optional. External squad UUID.'),
+            mtprotoSecret: MtprotoHexSchema.nullish().describe(
+                'Optional. Telegram proxy secret, 32 hex characters. Null goes back to a generated one.',
+            ),
+            mtprotoAdTag: MtprotoHexSchema.nullish().describe(
+                "Optional. Sponsored channel tag from @MTProxybot. Null goes back to the inbound's tag.",
+            ),
         })
         .refine((d) => d.username ?? d.id, {
             error: 'At least one of username, id must be provided',

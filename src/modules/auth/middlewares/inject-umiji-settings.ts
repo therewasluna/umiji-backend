@@ -17,9 +17,7 @@ export class InjectUmijiSettingsMiddleware implements NestMiddleware {
         next: NextFunction,
     ) {
         try {
-            const umijiSettings = await this.queryBus.execute(
-                new GetCachedUmijiSettingsQuery(),
-            );
+            const umijiSettings = await this.queryBus.execute(new GetCachedUmijiSettingsQuery());
 
             req.umijiSettings = umijiSettings;
 

@@ -12,14 +12,26 @@ import {
     DecideBrokerBotOrderCommand,
     GetBrokerBotCommand,
     GetBrokerBotOrdersCommand,
+    GetBrokerBotStatsCommand,
+    GetBrokerBotTextsCommand,
+    TBrokerBotTextKey,
     TopUpBrokerBotWalletCommand,
     UpdateBrokerBotPlanCommand,
     UpdateBrokerBotSettingsCommand,
+    UpdateBrokerBotTextsCommand,
 } from '@libs/contracts/commands';
 import { ERRORS } from '@libs/contracts/constants';
 
 import { BrokerEntity } from '@modules/brokers/entities';
 
+import {
+    botLangs,
+    CustomTexts,
+    DEFAULT_TEXTS,
+    defaultLang,
+    isLang,
+    translator,
+} from './bot/bot.messages';
 import { BrokerBotHandler } from './bot/broker-bot.handler';
 import { TelegramClient, TelegramError } from './bot/telegram.client';
 import { encryptToken } from './bot/token-cipher';
@@ -27,26 +39,11 @@ import { BrokerBotRepository, OrderRow } from './broker-bot.repository';
 
 type BotView = GetBrokerBotCommand.Response['response'];
 type OrderView = GetBrokerBotOrdersCommand.Response['response']['orders'][number];
+type TextsView = GetBrokerBotTextsCommand.Response['response'];
 
 const BROADCAST_SEND_DELAY_MS = 50; // ~20 messages/s per process, well under Telegram's bulk limits
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-// Names and pinned headers of the staff topics, in the bot's language.
-const TOPIC_TEXT = {
-    en: {
-        reviewName: 'Review Receipts',
-        reviewIntro: '🧾 Customer payment receipts will appear here for approval.',
-        logsName: 'Logs',
-        logsIntro: '📜 Bot activity — approvals, rejections and errors — is logged here.',
-    },
-    fa: {
-        reviewName: 'بررسی رسیدها',
-        reviewIntro: '🧾 رسیدهای پرداخت مشتریان برای تأیید اینجا نمایش داده می‌شوند.',
-        logsName: 'لاگ‌ها',
-        logsIntro: '📜 فعالیت ربات — تأییدها، ردها و خطاها — اینجا ثبت می‌شود.',
-    },
-} as const;
 
 @Injectable()
 export class BrokerBotService {
@@ -69,17 +66,17 @@ export class BrokerBotService {
                 this.repository.listCategories(broker.uuid),
             ]);
             const isConnected = !!bot?.botToken;
+            const trialResetAt = bot?.trialResetAt ?? new Date();
 
             return ok({
                 isConnected,
                 botUsername: bot?.botUsername ?? null,
                 groupId: bot?.groupId ?? null,
                 topicsReady: !!bot?.reviewTopicId && !!bot?.logsTopicId,
-                lang: bot?.lang === 'fa' ? 'fa' : 'en',
-                greeting: bot?.greeting ?? null,
                 channelUrl: bot?.channelUrl ?? null,
                 cards: (bot?.cards ?? []) as BotView['cards'],
                 wallets: (bot?.wallets ?? []) as BotView['wallets'],
+                payMethods: (bot?.payMethods ?? []) as BotView['payMethods'],
                 requiredChannels: (bot?.requiredChannels ?? []) as BotView['requiredChannels'],
                 groupFinds: isConnected ? ((bot!.groupFinds ?? []) as BotView['groupFinds']) : [],
                 categories,
@@ -89,10 +86,20 @@ export class BrokerBotService {
                     trafficGb: p.trafficGb,
                     durationDays: p.durationDays,
                     price: p.price,
-                    squadUuid: p.squadUuid,
+                    squadUuids: p.squadUuids,
+                    ipLimit: p.ipLimit,
                     categoryId: p.categoryId,
                     isActive: p.isActive,
                 })),
+                referralPercent: bot?.referralPercent ?? 0,
+                trial: (bot?.trial ?? null) as BotView['trial'],
+                trialResetAt,
+                trialClaims: bot
+                    ? await this.repository.countTrialClaims(
+                          broker.uuid,
+                          `trial:${trialResetAt.getTime()}`,
+                      )
+                    : 0,
                 stats: isConnected
                     ? await this.repository.getStats(broker.uuid, bot!.statsResetAt)
                     : null,
@@ -104,8 +111,8 @@ export class BrokerBotService {
     }
 
     /**
-     * Connects the bot, or changes its group, language or greeting. A blank token keeps the
-     * saved one. Topics are created in the staff group whenever it is set or changes.
+     * Connects the bot, or changes its group. A blank token keeps the saved one. Topics are
+     * created in the staff group whenever it is set or changes.
      */
     public async connect(
         broker: BrokerEntity,
@@ -131,17 +138,12 @@ export class BrokerBotService {
 
             const groupChanged = !!existing?.botToken && (existing.groupId ?? null) !== dto.groupId;
 
-            // Same bot and group: language and greeting are read live on every update,
-            // so this is a plain save. No token round trip, nothing to re-create.
-            if (existingToken && !submittedToken && !groupChanged) {
-                const bot = await this.repository.upsertBot(broker.uuid, {
-                    lang: dto.lang,
-                    greeting: dto.greeting || null,
-                });
+            // Same bot and group: nothing to save, no token round trip.
+            if (existing && existingToken && !submittedToken && !groupChanged) {
                 // Topics that failed before (e.g. no manage-topics right yet) are retried here.
                 const topicsError = await this.ensureTopics(
                     this.handler.client(existingToken),
-                    bot,
+                    existing,
                 );
                 if (topicsError) return topicsError;
                 return this.getBot(broker);
@@ -178,8 +180,6 @@ export class BrokerBotService {
                 botToken: encryptToken(this.appSecret, token),
                 botUsername,
                 groupId: dto.groupId,
-                lang: dto.lang,
-                greeting: dto.greeting || null,
                 // A different bot starts fresh: its own update offset and stats.
                 ...(isNewBot && { updateOffset: 0, statsResetAt: new Date() }),
                 ...(groupChanged && { reviewTopicId: null, logsTopicId: null }),
@@ -206,20 +206,31 @@ export class BrokerBotService {
         });
     }
 
-    /** Creates the Review Receipts and Logs topics when a group is set and they're missing. */
+    /**
+     * Creates the Review Receipts and Stats topics when a group is set and they're missing, or
+     * renames existing ones to their current texts.
+     */
     private async ensureTopics(
         tg: ReturnType<BrokerBotHandler['client']>,
         bot: BrokerBots,
     ): Promise<TResult<BotView> | null> {
-        if (!bot.groupId || (bot.reviewTopicId && bot.logsTopicId)) return null;
-        const tx = TOPIC_TEXT[bot.lang === 'fa' ? 'fa' : 'en'];
+        if (!bot.groupId) return null;
+        if (bot.reviewTopicId && bot.logsTopicId) {
+            await this.handler.syncStaffTopics(tg, bot);
+            return null;
+        }
+        const t = translator(bot.texts, defaultLang(bot));
         try {
             const reviewTopicId = await tg.createPinnedTopic(
                 bot.groupId,
-                tx.reviewName,
-                tx.reviewIntro,
+                t('reviewTopicName'),
+                t('reviewTopicIntro'),
             );
-            const logsTopicId = await tg.createPinnedTopic(bot.groupId, tx.logsName, tx.logsIntro);
+            const logsTopicId = await tg.createPinnedTopic(
+                bot.groupId,
+                t('logsTopicName'),
+                t('logsTopicIntro'),
+            );
             await this.repository.upsertBot(bot.brokerUuid, { reviewTopicId, logsTopicId });
             return null;
         } catch {
@@ -227,7 +238,7 @@ export class BrokerBotService {
         }
     }
 
-    /** Stops the bot. Plans, payment methods, channels, customers and orders stay. */
+    /** Stops the bot. Plans, payment methods, channels, texts, customers and orders stay. */
     public async disconnect(broker: BrokerEntity): Promise<TResult<BotView>> {
         try {
             const bot = await this.repository.getBot(broker.uuid);
@@ -238,8 +249,6 @@ export class BrokerBotService {
                     groupId: null,
                     reviewTopicId: null,
                     logsTopicId: null,
-                    lang: 'en',
-                    greeting: null,
                     channelUrl: null,
                     groupFinds: [],
                     pendingRejects: {},
@@ -262,14 +271,88 @@ export class BrokerBotService {
                 const bot = await this.repository.getBot(broker.uuid);
                 if (!bot?.botToken) return fail(ERRORS.BROKER_BOT_NOT_CONNECTED);
             }
+            if (
+                dto.trial &&
+                !dto.trial.squadUuids.every((uuid) =>
+                    broker.internalSquads.some((s) => s.uuid === uuid),
+                )
+            ) {
+                return fail(ERRORS.BROKER_SQUAD_NOT_ALLOWED);
+            }
             await this.repository.upsertBot(broker.uuid, {
                 ...(dto.channelUrl !== undefined && { channelUrl: dto.channelUrl }),
                 ...(dto.cards && { cards: dto.cards }),
                 ...(dto.wallets && { wallets: dto.wallets }),
+                ...(dto.payMethods && { payMethods: dto.payMethods }),
                 ...(dto.requiredChannels && { requiredChannels: dto.requiredChannels }),
                 ...(dto.clearGroupFinds && { groupFinds: [] }),
+                ...(dto.referralPercent !== undefined && { referralPercent: dto.referralPercent }),
+                ...(dto.trial && { trial: dto.trial }),
+                // A new round: every customer can claim the trial once more.
+                ...(dto.resetTrial && { trialResetAt: new Date() }),
             });
             return this.getBot(broker);
+        } catch (error) {
+            this.logger.error(error);
+            return fail(ERRORS.BROKER_BOT_ERROR);
+        }
+    }
+
+    public async getStats(
+        broker: BrokerEntity,
+    ): Promise<TResult<GetBrokerBotStatsCommand.Response['response']>> {
+        try {
+            const bot = await this.repository.getBot(broker.uuid);
+            if (!bot?.botToken) return fail(ERRORS.BROKER_BOT_NOT_CONNECTED);
+            // Yesterday is only for the daily summary.
+            const { yesterday: _yesterday, ...report } = await this.repository.getReport(
+                broker.uuid,
+                bot.statsResetAt,
+            );
+            return ok(report);
+        } catch (error) {
+            this.logger.error(error);
+            return fail(ERRORS.BROKER_BOT_ERROR);
+        }
+    }
+
+    public async getTexts(broker: BrokerEntity): Promise<TResult<TextsView>> {
+        try {
+            const bot = await this.repository.getBot(broker.uuid);
+            return ok({
+                langs: botLangs(bot),
+                defaultLang: defaultLang(bot),
+                texts: (bot?.texts ?? {}) as CustomTexts,
+                defaults: DEFAULT_TEXTS,
+            });
+        } catch (error) {
+            this.logger.error(error);
+            return fail(ERRORS.BROKER_BOT_ERROR);
+        }
+    }
+
+    /** Saves the languages and texts. The bot reads them on every update, so they apply at once. */
+    public async updateTexts(
+        broker: BrokerEntity,
+        dto: UpdateBrokerBotTextsCommand.Request,
+    ): Promise<TResult<TextsView>> {
+        try {
+            // Only real changes are kept, so later improvements to a default reach this bot.
+            const texts: CustomTexts = {};
+            for (const [lang, byKey] of Object.entries(dto.texts)) {
+                if (!isLang(lang)) continue;
+                for (const [key, text] of Object.entries(byKey ?? {})) {
+                    const k = key as TBrokerBotTextKey;
+                    if (!text?.trim() || text === DEFAULT_TEXTS[lang][k]) continue;
+                    (texts[lang] ??= {})[k] = text;
+                }
+            }
+            await this.repository.upsertBot(broker.uuid, {
+                lang: dto.defaultLang,
+                langs: dto.langs,
+                texts,
+            });
+            return this.getTexts(broker);
         } catch (error) {
             this.logger.error(error);
             return fail(ERRORS.BROKER_BOT_ERROR);
@@ -281,7 +364,10 @@ export class BrokerBotService {
         broker: BrokerEntity,
         dto: Partial<CreateBrokerBotPlanCommand.Request>,
     ): Promise<TResult<true>> {
-        if (dto.squadUuid && !broker.internalSquads.some((s) => s.uuid === dto.squadUuid)) {
+        if (
+            dto.squadUuids &&
+            !dto.squadUuids.every((uuid) => broker.internalSquads.some((s) => s.uuid === uuid))
+        ) {
             return fail(ERRORS.BROKER_SQUAD_NOT_ALLOWED);
         }
         if (
@@ -386,6 +472,24 @@ export class BrokerBotService {
         dto: DecideBrokerBotOrderCommand.Request,
     ): Promise<TResult<DecideBrokerBotOrderCommand.Response['response']>> {
         try {
+            const order = await this.repository.getOrder(broker.uuid, id);
+            if (order?.kind === 'plan' && order.status === 'pending' && order.userId === null) {
+                if (dto.decision === 'approve' && dto.userId === undefined) {
+                    return fail(ERRORS.USER_NOT_FOUND);
+                }
+                const result = await this.handler.recoverPlanOrder(
+                    broker.uuid,
+                    broker.username,
+                    id,
+                    dto.decision,
+                    dto.userId,
+                );
+                if (result === 'invalid_user') return fail(ERRORS.USER_NOT_FOUND);
+                if (result === 'not_pending') return fail(ERRORS.BROKER_BOT_ORDER_NOT_PENDING);
+                return ok({ isDone: true });
+            }
+            if (dto.userId !== undefined) return fail(ERRORS.USER_NOT_FOUND);
+
             const result = await this.handler.decideTopupFromPanel(
                 broker.uuid,
                 id,
@@ -559,6 +663,7 @@ export class BrokerBotService {
 function toOrderView(o: OrderRow): OrderView {
     return {
         id: o.id,
+        userId: o.userId === null ? null : Number(o.userId),
         kind: o.kind as OrderView['kind'],
         status: o.status as OrderView['status'],
         amount: o.amount,

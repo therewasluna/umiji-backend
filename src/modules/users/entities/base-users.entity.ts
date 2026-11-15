@@ -18,6 +18,8 @@ export class BaseUserEntity implements Users {
     public trojanPassword: string;
     public vlessUuid: string;
     public ssPassword: string;
+    public mtprotoSecret: null | string;
+    public mtprotoAdTag: null | string;
 
     public description: null | string;
     public tag: string | null;
@@ -25,6 +27,7 @@ export class BaseUserEntity implements Users {
     public email: string | null;
 
     public hwidDeviceLimit: number | null;
+    public ipLimit: number | null;
 
     public externalSquadUuid: string | null;
     public brokerUuid: string | null;

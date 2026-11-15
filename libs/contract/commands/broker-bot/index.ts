@@ -1,4 +1,5 @@
 export * from './broker-bot-broadcasts.command';
+export * from './broker-bot-texts';
 export * from './broker-bot.response';
 export * from './connect-broker-bot.command';
 export * from './create-broker-bot-category.command';
@@ -9,6 +10,7 @@ export * from './delete-broker-bot-plan.command';
 export * from './disconnect-broker-bot.command';
 export * from './get-broker-bot-orders.command';
 export * from './get-broker-bot-receipt.command';
+export * from './get-broker-bot-stats.command';
 export * from './get-broker-bot.command';
 export * from './top-up-broker-bot-wallet.command';
 export * from './update-broker-bot-plan.command';

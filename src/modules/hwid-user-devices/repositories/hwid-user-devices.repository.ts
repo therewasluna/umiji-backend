@@ -338,7 +338,7 @@ export class HwidUserDevicesRepository implements Omit<
             where: { userId: entity.userId },
         });
 
-        if (count >= deviceLimit) {
+        if (deviceLimit > 0 && count >= deviceLimit) {
             return { status: 'LIMIT_REACHED', hwidDevice: null };
         }
 

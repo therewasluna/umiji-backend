@@ -327,7 +327,7 @@ function readSshString(blob: Buffer): string {
     return blob.subarray(4, 4 + length).toString('utf8');
 }
 
-function sshFingerprint(blob: Buffer): string {
+export function sshFingerprint(blob: Buffer): string {
     return `SHA256:${createHash('sha256').update(blob).digest('base64').replace(/=+$/, '')}`;
 }
 

@@ -91,7 +91,6 @@ export class ConfigProfileController {
         };
     }
 
-
     @Endpoint({
         command: GetConfigProfilesCommand,
         httpCode: HttpStatus.OK,
@@ -238,5 +237,4 @@ export class ConfigProfileController {
             response: data,
         };
     }
-
 }

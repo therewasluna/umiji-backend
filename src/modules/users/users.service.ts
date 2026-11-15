@@ -8,6 +8,7 @@ import { EventBus, QueryBus } from '@nestjs/cqrs';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 
 import { TypedConfigService } from '@common/config/app-config';
+import { deriveMtprotoSecret } from '@common/helpers/xray-config/mtproto-secret';
 import { fail, ok, TResult } from '@common/types';
 import {
     compileShortUuidPattern,
@@ -72,6 +73,7 @@ export class UsersService {
     public async createUser(
         dto: CreateUserBodyDto,
         broker?: BrokerEntity,
+        deferEvents = false,
     ): Promise<TResult<UserEntity>> {
         try {
             let username = dto.username;
@@ -96,12 +98,15 @@ export class UsersService {
                 }
             }
 
+            const vlessUuid = dto.vlessUuid || this.createUuid();
             const userEntity = new BaseUserEntity({
                 username,
                 shortUuid: dto.shortUuid || this.generateShortUuid(),
                 trojanPassword: dto.trojanPassword || this.createPassword(),
-                vlessUuid: dto.vlessUuid || this.createUuid(),
+                vlessUuid,
                 ssPassword: dto.ssPassword || this.createPassword(),
+                mtprotoSecret: dto.mtprotoSecret ?? deriveMtprotoSecret(vlessUuid),
+                mtprotoAdTag: dto.mtprotoAdTag,
                 status: dto.status,
                 trafficLimitBytes: wrapBigInt(dto.trafficLimitBytes),
                 trafficLimitStrategy: dto.trafficLimitStrategy,
@@ -112,6 +117,7 @@ export class UsersService {
                 lastTrafficResetAt: dto.lastTrafficResetAt,
                 description: dto.description,
                 hwidDeviceLimit: dto.hwidDeviceLimit,
+                ipLimit: dto.ipLimit,
                 tag: dto.tag,
                 // Broker users always get the broker's own external squad.
                 externalSquadUuid: broker ? broker.externalSquadUuid : dto.externalSquadUuid,
@@ -126,23 +132,10 @@ export class UsersService {
 
             if (!created) return fail(ERRORS.BROKER_USERS_LIMIT_REACHED);
 
-            const result = await this.getUserByUniqueFields({ id: created.id });
+            const user = await this.userRepository.findUserByIdInTransaction(created.id);
+            if (!user) return fail(ERRORS.CREATE_USER_ERROR);
 
-            if (!result.isOk) return fail(ERRORS.CREATE_USER_ERROR);
-
-            const { response: user } = result;
-
-            if (user.status === USERS_STATUS.ACTIVE) {
-                this.eventBus.publish(new AddUserToNodeEvent(user.id));
-            }
-
-            this.eventEmitter.emit(
-                EVENTS.USER.CREATED,
-                new UserEvent({
-                    user: user,
-                    event: EVENTS.USER.CREATED,
-                }),
-            );
+            if (!deferEvents) this.publishCreatedUser(user);
 
             return ok(user);
         } catch (error) {
@@ -163,10 +156,24 @@ export class UsersService {
                 if (fields.includes('subscriptionUuid') || fields.includes('subscription_uuid')) {
                     return fail(ERRORS.USER_SUBSCRIPTION_UUID_ALREADY_EXISTS);
                 }
+                if (fields.includes('mtprotoSecret') || fields.includes('mtproto_secret')) {
+                    return fail(ERRORS.USER_MTPROTO_SECRET_ALREADY_EXISTS);
+                }
             }
 
             return fail(ERRORS.CREATE_USER_ERROR);
         }
+    }
+
+    public publishCreatedUser(user: UserEntity): void {
+        if (user.status === USERS_STATUS.ACTIVE) {
+            this.eventBus.publish(new AddUserToNodeEvent(user.id));
+        }
+
+        this.eventEmitter.emit(
+            EVENTS.USER.CREATED,
+            new UserEvent({ user, event: EVENTS.USER.CREATED }),
+        );
     }
 
     public async updateUser(
@@ -216,6 +223,11 @@ export class UsersService {
                 telegramId: wrapBigIntNullable(telegramId),
                 lastTriggeredThreshold: trafficLimitBytes !== undefined ? 0 : undefined,
             });
+
+            // Null goes back to the derived secret, stored so the unique index still covers it.
+            if (dto.mtprotoSecret === null) {
+                newUserEntity.mtprotoSecret = deriveMtprotoSecret(user.vlessUuid);
+            }
 
             let addToNode = false;
             let removeFromNode = false;
@@ -277,6 +289,27 @@ export class UsersService {
                 }
             }
 
+            if (status !== undefined) {
+                updateDto.status = status;
+                const hasActiveSquads =
+                    (
+                        newActiveInternalSquadsUuids ??
+                        user.activeInternalSquads.map((squad) => squad.uuid)
+                    ).length > 0;
+                addToNode = status === USERS_STATUS.ACTIVE && hasActiveSquads;
+                removeFromNode = !addToNode;
+            }
+
+            const mtprotoSecretChanged =
+                newUserEntity.mtprotoSecret !== undefined &&
+                newUserEntity.mtprotoSecret !== user.mtprotoSecret;
+            const mtprotoAdTagChanged =
+                dto.mtprotoAdTag !== undefined && dto.mtprotoAdTag !== user.mtprotoAdTag;
+
+            if (mtprotoSecretChanged || mtprotoAdTagChanged) {
+                addToNode = true;
+            }
+
             const updatedUser = await this.userRepository.update(updateDto);
 
             if (!updatedUser) {
@@ -284,7 +317,13 @@ export class UsersService {
             }
 
             if (updatedUser.status === USERS_STATUS.ACTIVE && addToNode && !removeFromNode) {
-                this.eventBus.publish(new AddUserToNodeEvent(updatedUser.id));
+                // Passing the UUID also ends connections opened with the old secret.
+                this.eventBus.publish(
+                    new AddUserToNodeEvent(
+                        updatedUser.id,
+                        mtprotoSecretChanged ? user.vlessUuid : undefined,
+                    ),
+                );
             }
 
             if (removeFromNode) {
@@ -304,6 +343,15 @@ export class UsersService {
             return ok(updatedUser);
         } catch (error) {
             this.logger.error(error);
+
+            if (
+                error instanceof Prisma.PrismaClientKnownRequestError &&
+                error.code === 'P2002' &&
+                Array.isArray(error.meta?.target) &&
+                error.meta.target.some((field) => /mtproto_?secret/i.test(String(field)))
+            ) {
+                return fail(ERRORS.USER_MTPROTO_SECRET_ALREADY_EXISTS);
+            }
 
             return fail(ERRORS.UPDATE_USER_ERROR);
         }
@@ -387,12 +435,15 @@ export class UsersService {
                 shortUuid = dto.shortUuid ?? this.generateShortUuid();
             }
 
+            const vlessUuid = this.createUuid();
             const updateResult = await this.userRepository.revokeUserSubscription({
                 id: user.id,
                 shortUuid,
                 trojanPassword: this.createPassword(),
-                vlessUuid: this.createUuid(),
+                vlessUuid,
                 ssPassword: this.createPassword(),
+                // Back to one derived from the new UUID, or the old Telegram link would keep working.
+                mtprotoSecret: deriveMtprotoSecret(vlessUuid),
                 subRevokedAt: new Date(),
                 updatedAt: new Date(),
             });
@@ -779,9 +830,7 @@ export class UsersService {
 
             const validatedUserIds = await this.userRepository.validateUserIds(userIds);
 
-            await this.userRepository.removeUsersFromInternalSquads(validatedUserIds);
-
-            await this.userRepository.addUsersToInternalSquads(
+            await this.userRepository.replaceUsersInternalSquads(
                 validatedUserIds,
                 internalSquadsUuids,
             );

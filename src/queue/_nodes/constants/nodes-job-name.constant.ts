@@ -14,6 +14,7 @@ export const NODES_JOB_NAMES = {
     CONNECTIONS_BY_NODE: 'connectionsByNode',
     GEOCHECK_BY_NODE: 'geocheckByNode',
     EXPORT_NODE_CONNECTIONS: 'exportNodeConnections',
+    SYNC_IP_LIMITS: 'syncIpLimits',
     DROP_USERS_CONNECTIONS: 'dropUsersConnections',
     DROP_IPS_CONNECTIONS: 'dropIpsConnections',
     SYNC_NODE_PLUGINS: 'syncNodePlugins',

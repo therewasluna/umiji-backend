@@ -7,6 +7,8 @@ import {
     INSTALLATION_GUIDE_BLOCKS_VARIANTS,
     BUTTON_TYPES,
     LANGUAGE_CODES,
+    SUBSCRIPTION_PAGE_ACCENT_COLORS,
+    SUBSCRIPTION_PAGE_DEFAULT_ACCENT_COLOR,
 } from '../constants';
 import {
     validateLocalizedTexts,
@@ -81,6 +83,10 @@ const BrandingSettingsSchema = z.object({
     title: z.string(),
     logoUrl: z.string(),
     supportUrl: z.url(),
+    // Configs saved before this setting existed have no value and stay on the default.
+    accentColor: z
+        .enum(SUBSCRIPTION_PAGE_ACCENT_COLORS)
+        .default(SUBSCRIPTION_PAGE_DEFAULT_ACCENT_COLOR),
 });
 
 const UiConfigSchema = z.object({

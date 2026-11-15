@@ -235,6 +235,7 @@ export class BrokersRepository {
             where: { uuid: dto.uuid },
             data: {
                 ...dto.fields,
+                sessionVersion: dto.passwordHash ? { increment: 1 } : undefined,
                 admin: dto.passwordHash
                     ? { update: { passwordHash: dto.passwordHash } }
                     : undefined,

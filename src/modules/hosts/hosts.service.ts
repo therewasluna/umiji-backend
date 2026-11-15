@@ -6,7 +6,7 @@ import { QueryBus } from '@nestjs/cqrs';
 import { fail, ok, TResult } from '@common/types';
 import { cloneString } from '@common/utils/clone-string.util';
 import { nullifyEmpty } from '@common/utils/convert-type';
-import { ERRORS } from '@libs/contracts/constants';
+import { ERRORS, SECURITY_LAYERS } from '@libs/contracts/constants';
 
 import { GetConfigProfileByUuidQuery } from '@modules/config-profiles/queries/get-config-profile-by-uuid';
 import { GetSubscriptionTemplateByUuidQuery } from '@modules/subscription-template/queries/get-template-by-uuid';
@@ -19,6 +19,47 @@ import {
 } from './dtos';
 import { HostsEntity } from './entities/hosts.entity';
 import { HostsRepository } from './repositories/hosts.repository';
+
+// A tg:// link carries the address, port and secret and nothing else, so these can't reach the Telegram app.
+const MTPROTO_HOST_RESET = {
+    alpn: null,
+    excludeFromSubscriptionTypes: [],
+    finalMask: null,
+    fingerprint: null,
+    host: null,
+    keepSniBlank: false,
+    mapper: {},
+    mihomoIpVersion: null,
+    mihomoX25519: false,
+    muxParams: null,
+    overrideSniFromAddress: false,
+    path: null,
+    pinnedPeerCertSha256: null,
+    securityLayer: SECURITY_LAYERS.DEFAULT,
+    serverDescription: null,
+    sni: null,
+    sockoptParams: null,
+    verifyPeerCertByName: null,
+    vlessRouteId: null,
+    xhttpExtraParams: null,
+    xrayJsonTemplateUuid: null,
+};
+
+const getMtprotoHostError = (dto: object) => {
+    const unsupported = Object.keys(MTPROTO_HOST_RESET).filter((key) => {
+        const value = dto[key as keyof typeof dto] as unknown;
+
+        if (!value || value === SECURITY_LAYERS.DEFAULT) return false;
+
+        return typeof value !== 'object' || Object.keys(value).length > 0;
+    });
+
+    return unsupported.length > 0
+        ? ERRORS.HOST_MTPROTO_UNSUPPORTED_OPTIONS.withMessage(
+              `A Telegram proxy host only uses its address and port, so it can't have: ${unsupported.join(', ')}.`,
+          )
+        : null;
+};
 
 @Injectable()
 export class HostsService {
@@ -69,6 +110,10 @@ export class HostsService {
             if (!configProfileInbound) {
                 return fail(ERRORS.CONFIG_PROFILE_INBOUND_NOT_FOUND_IN_SPECIFIED_PROFILE);
             }
+
+            const mtprotoError =
+                configProfileInbound.type === 'mtproto' ? getMtprotoHostError(dto) : null;
+            if (mtprotoError) return fail(mtprotoError);
 
             const hostEntity = new HostsEntity({
                 ...rest,
@@ -189,6 +234,7 @@ export class HostsService {
 
             let configProfileUuid: string | undefined;
             let configProfileInboundUuid: string | undefined;
+            let isMtproto = false;
             if (inboundObj) {
                 const configProfile = await this.queryBus.execute(
                     new GetConfigProfileByUuidQuery(inboundObj.configProfileUuid),
@@ -208,7 +254,13 @@ export class HostsService {
 
                 configProfileUuid = configProfile.response.uuid;
                 configProfileInboundUuid = configProfileInbound.uuid;
+                isMtproto = configProfileInbound.type === 'mtproto';
+            } else {
+                isMtproto = await this.hostsRepository.hasMtprotoHost([host.uuid]);
             }
+
+            const mtprotoError = isMtproto ? getMtprotoHostError(dto) : null;
+            if (mtprotoError) return fail(mtprotoError);
 
             if (nodes !== undefined) {
                 await this.hostsRepository.clearNodesFromHost(host.uuid);
@@ -234,6 +286,7 @@ export class HostsService {
                 serverDescription,
                 finalMask,
                 internalSquadsMode: internalSquads?.mode,
+                ...(isMtproto ? MTPROTO_HOST_RESET : {}),
             });
 
             return ok(result);
@@ -429,6 +482,7 @@ export class HostsService {
 
             let configProfileUuid: string | undefined;
             let configProfileInboundUuid: string | undefined;
+            let isMovingToMtproto = false;
             if (inboundObj) {
                 const configProfile = await this.queryBus.execute(
                     new GetConfigProfileByUuidQuery(inboundObj.configProfileUuid),
@@ -448,7 +502,14 @@ export class HostsService {
 
                 configProfileUuid = configProfile.response.uuid;
                 configProfileInboundUuid = configProfileInbound.uuid;
+                isMovingToMtproto = configProfileInbound.type === 'mtproto';
             }
+
+            const touchesMtproto =
+                isMovingToMtproto ||
+                (!inboundObj && (await this.hostsRepository.hasMtprotoHost(uuids)));
+            const mtprotoError = touchesMtproto ? getMtprotoHostError(dto) : null;
+            if (mtprotoError) return fail(mtprotoError);
 
             if (nodes !== undefined) {
                 await this.hostsRepository.clearNodesFromHosts(uuids);
@@ -472,6 +533,7 @@ export class HostsService {
                     configProfileUuid,
                     configProfileInboundUuid,
                     internalSquadsMode: internalSquads?.mode,
+                    ...(isMovingToMtproto ? MTPROTO_HOST_RESET : {}),
                 },
             });
 

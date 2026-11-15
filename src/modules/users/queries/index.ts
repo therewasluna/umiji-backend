@@ -1,3 +1,4 @@
+import { GetIpLimitedUsersHandler } from './get-ip-limited-users';
 import { GetNotConnectedUsersHandler } from './get-not-connected-users';
 import { GetPreparedConfigWithUsersHandler } from './get-prepared-config-with-users';
 import { GetShortUserStatsHandler } from './get-short-user-stats';
@@ -19,6 +20,7 @@ export const QUERIES = [
     GetUsersByExpireAtHandler,
     GetUsersWithPaginationHandler,
     GetNotConnectedUsersHandler,
+    GetIpLimitedUsersHandler,
     GetUserSubpageConfigHandler,
     GetUsersWithResolvedInboundsHandler,
     ValidateUserIdsHandler,

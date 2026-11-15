@@ -30,7 +30,7 @@ export class RenderTemplatesService {
     }> {
         const { srrContext, user, hosts, hostsOverrides, fallbackOptions } = params;
 
-        const formattedHosts = await this.resolveProxyConfigService.resolveProxyConfig({
+        const resolvedHosts = await this.resolveProxyConfigService.resolveProxyConfig({
             subscriptionSettings: srrContext.subscriptionSettings,
             hosts,
             user,
@@ -38,6 +38,10 @@ export class RenderTemplatesService {
             fallbackOptions,
             excludeHostsByTags: srrContext.excludeHostsByTags,
         });
+
+        // Only Telegram itself speaks MTProto, so VPN apps never get these hosts.
+        // The subscription page and the panel show their links instead (generateLinks).
+        const formattedHosts = resolvedHosts.filter((host) => host.protocol !== 'mtproto');
 
         switch (srrContext.matchedResponseType) {
             case 'XRAY_BASE64':

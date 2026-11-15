@@ -42,9 +42,7 @@ export const UmijiUserUsageStreamMessageSchema = z
     });
 
 export type TUserUsageStreamRecord = z.infer<typeof UserUsageStreamRecordSchema>;
-export type TUmijiUserUsageStreamMessage = z.infer<
-    typeof UmijiUserUsageStreamMessageSchema
->;
+export type TUmijiUserUsageStreamMessage = z.infer<typeof UmijiUserUsageStreamMessageSchema>;
 
 export const SUBSCRIPTION_REQUEST_STREAM_MESSAGE_VERSION = '1';
 

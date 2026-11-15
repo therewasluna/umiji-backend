@@ -22,9 +22,12 @@ import {
     GetBrokerBotCommand,
     GetBrokerBotOrdersCommand,
     GetBrokerBotReceiptCommand,
+    GetBrokerBotStatsCommand,
+    GetBrokerBotTextsCommand,
     TopUpBrokerBotWalletCommand,
     UpdateBrokerBotPlanCommand,
     UpdateBrokerBotSettingsCommand,
+    UpdateBrokerBotTextsCommand,
 } from '@libs/contracts/commands';
 import { ROLE } from '@libs/contracts/constants';
 
@@ -33,6 +36,7 @@ import { BrokerEntity } from '@modules/brokers/entities';
 import { BrokerBotService } from './broker-bot.service';
 import {
     BrokerBotResponseDto,
+    BrokerBotTextsResponseDto,
     CreateBrokerBotBroadcastBodyDto,
     CreateBrokerBotBroadcastResponseDto,
     GetBrokerBotBroadcastsResponseDto,
@@ -48,10 +52,12 @@ import {
     GetBrokerBotOrdersResponseDto,
     GetBrokerBotReceiptParamDto,
     GetBrokerBotReceiptResponseDto,
+    GetBrokerBotStatsResponseDto,
     TopUpBrokerBotWalletBodyDto,
     TopUpBrokerBotWalletResponseDto,
     UpdateBrokerBotPlanBodyDto,
     UpdateBrokerBotSettingsBodyDto,
+    UpdateBrokerBotTextsBodyDto,
 } from './dtos';
 
 /** The Telegram store bot of the broker making the request. */
@@ -219,6 +225,36 @@ export class BrokerBotController {
         @Body() body: TopUpBrokerBotWalletBodyDto,
     ): Promise<TopUpBrokerBotWalletResponseDto> {
         return { response: errorHandler(await this.brokerBotService.topUp(broker, body)) };
+    }
+
+    @Endpoint({
+        command: GetBrokerBotStatsCommand,
+        httpCode: HttpStatus.OK,
+        type: GetBrokerBotStatsResponseDto,
+    })
+    async getStats(@GetBroker() broker: BrokerEntity): Promise<GetBrokerBotStatsResponseDto> {
+        return { response: errorHandler(await this.brokerBotService.getStats(broker)) };
+    }
+
+    @Endpoint({
+        command: GetBrokerBotTextsCommand,
+        httpCode: HttpStatus.OK,
+        type: BrokerBotTextsResponseDto,
+    })
+    async getTexts(@GetBroker() broker: BrokerEntity): Promise<BrokerBotTextsResponseDto> {
+        return { response: errorHandler(await this.brokerBotService.getTexts(broker)) };
+    }
+
+    @Endpoint({
+        command: UpdateBrokerBotTextsCommand,
+        httpCode: HttpStatus.OK,
+        type: BrokerBotTextsResponseDto,
+    })
+    async updateTexts(
+        @GetBroker() broker: BrokerEntity,
+        @Body() body: UpdateBrokerBotTextsBodyDto,
+    ): Promise<BrokerBotTextsResponseDto> {
+        return { response: errorHandler(await this.brokerBotService.updateTexts(broker, body)) };
     }
 
     @Roles(ROLE.ADMIN)

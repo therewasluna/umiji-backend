@@ -71,6 +71,26 @@ export const ERRORS = {
         message: 'User username already exists',
         httpCode: 400,
     },
+    USER_MTPROTO_SECRET_ALREADY_EXISTS: {
+        code: 'A284',
+        message: 'This Telegram proxy secret is already in use. Choose or generate another.',
+        httpCode: 400,
+    },
+    HOST_MTPROTO_UNSUPPORTED_OPTIONS: {
+        code: 'A285',
+        message: "A Telegram proxy host can't use these options",
+        httpCode: 400,
+        withMessage: (message: string) => ({
+            code: 'A285',
+            message,
+            httpCode: 400,
+        }),
+    },
+    TOO_MANY_LOGIN_ATTEMPTS: {
+        code: 'A286',
+        message: 'Too many sign-in attempts. Try again in a few minutes.',
+        httpCode: 429,
+    },
     USER_SHORT_UUID_ALREADY_EXISTS: {
         code: 'A020',
         message: 'User short UUID already exists',
@@ -1189,41 +1209,6 @@ export const ERRORS = {
         message: 'Sync snippet error',
         httpCode: 500,
     },
-    NODE_INTEGRATION_NOT_FOUND: {
-        code: 'A238',
-        message: 'Node integration not found',
-        httpCode: 404,
-    },
-    GET_ALL_NODE_INTEGRATIONS_ERROR: {
-        code: 'A239',
-        message: 'Get all node integrations error',
-        httpCode: 500,
-    },
-    GET_NODE_INTEGRATION_BY_UUID_ERROR: {
-        code: 'A240',
-        message: 'Get node integration by UUID error',
-        httpCode: 500,
-    },
-    CREATE_NODE_INTEGRATION_ERROR: {
-        code: 'A241',
-        message: 'Create node integration error',
-        httpCode: 500,
-    },
-    UPDATE_NODE_INTEGRATION_ERROR: {
-        code: 'A242',
-        message: 'Update node integration error',
-        httpCode: 500,
-    },
-    DELETE_NODE_INTEGRATION_ERROR: {
-        code: 'A243',
-        message: 'Delete node integration error',
-        httpCode: 500,
-    },
-    NODE_INTEGRATION_NAME_ALREADY_EXISTS: {
-        code: 'A244',
-        message: 'Node integration name already exists',
-        httpCode: 400,
-    },
     SHARED_LIST_NOT_FOUND: {
         code: 'A245',
         message: 'Shared list not found',
@@ -1400,6 +1385,21 @@ export const ERRORS = {
     BROKER_BOT_ERROR: {
         code: 'A278',
         message: 'Broker bot request failed',
+        httpCode: 500,
+    },
+    NODE_INSTALL_NOT_FOUND: {
+        code: 'A281',
+        message: 'Node installation not found or expired',
+        httpCode: 404,
+    },
+    NODE_INSTALL_ALREADY_RUNNING: {
+        code: 'A282',
+        message: 'A node is already being installed on this server',
+        httpCode: 409,
+    },
+    START_NODE_INSTALL_ERROR: {
+        code: 'A283',
+        message: 'Could not start the node installation',
         httpCode: 500,
     },
     BROKER_USERNAME_TOO_LONG: {

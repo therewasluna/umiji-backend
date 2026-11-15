@@ -68,7 +68,7 @@
     "@stablelib/base64": "^2.0.1",
     "@stablelib/x25519": "^2.0.1",
     "@umiji/hashed-set": "file:vendor/umiji-hashed-set-0.0.4.tgz",
-    "@umiji/node-contract": "file:vendor/umiji-node-contract-3.4.1.tgz",
+    "@umiji/node-contract": "file:vendor/umiji-node-contract-3.4.4.tgz",
     "@willsoto/nestjs-prometheus": "^6.1.1",
     "age-encryption": "^0.3.1",
     "arctic": "^3.7.0",

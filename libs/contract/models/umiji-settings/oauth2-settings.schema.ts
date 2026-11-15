@@ -23,7 +23,8 @@ export const Oauth2SettingsSchema = z.object({
                     return false;
                 },
                 {
-                    message: 'Must be a valid fully qualified domain name (FQDN), e.g. "example.com"',
+                    message:
+                        'Must be a valid fully qualified domain name (FQDN), e.g. "example.com"',
                 },
             ),
         ),
@@ -39,7 +40,8 @@ export const Oauth2SettingsSchema = z.object({
                     return false;
                 },
                 {
-                    message: 'Must be a valid fully qualified domain name (FQDN), e.g. "example.com"',
+                    message:
+                        'Must be a valid fully qualified domain name (FQDN), e.g. "example.com"',
                 },
             ),
         ),

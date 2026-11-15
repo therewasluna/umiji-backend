@@ -18,10 +18,8 @@ export namespace CreateBrokerCommand {
     export const RequestBodySchema = z.object({
         username: z
             .string()
-            .regex(
-                /^[a-zA-Z0-9_-]+$/,
-                'Username can only contain letters, numbers, underscores and dashes',
-            )
+            // No underscore: users are named `<broker>_…`, so `ali` could take names in `ali_x`'s space.
+            .regex(/^[a-zA-Z0-9-]+$/, 'Username can only contain letters, numbers and dashes')
             .min(3, 'Username must be at least 3 characters')
             .max(30, 'Username must be at most 30 characters')
             .describe(

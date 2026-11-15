@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { REST_API, USERS_ROUTES } from '../../api';
 import { getEndpointDetails, RESET_PERIODS, USERS_STATUS } from '../../constants';
+import { MtprotoHexSchema } from '../../models/users.schema';
 import { UserResponseSchema } from './user.response';
 
 export namespace CreateUserCommand {
@@ -49,6 +50,12 @@ export namespace CreateUserCommand {
             .max(32, 'SS password must be less than 32 characters')
             .optional()
             .describe('Optional. Password for Shadowsocks protocol. Must be 8-32 characters.'),
+        mtprotoSecret: MtprotoHexSchema.nullish().describe(
+            'Optional. Telegram proxy secret, 32 hex characters. Generated when left out.',
+        ),
+        mtprotoAdTag: MtprotoHexSchema.nullish().describe(
+            "Optional. Sponsored channel tag from @MTProxybot. Overrides the inbound's tag.",
+        ),
         trafficLimitBytes: z
             .number()
             .min(0, 'Traffic limit must be greater than 0')
@@ -110,6 +117,14 @@ export namespace CreateUserCommand {
                     'Optional. Maximum number of hardware devices allowed. Must be a positive integer.',
                 ),
         ),
+        ipLimit: z
+            .int()
+            .min(1)
+            .max(100)
+            .nullish()
+            .describe(
+                'Optional. How many IPs can use this user at the same time, across all nodes. Null or omitted means unlimited.',
+            ),
         activeInternalSquads: z
             .array(z.uuid())
             .optional()

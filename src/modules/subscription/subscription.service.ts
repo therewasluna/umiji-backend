@@ -17,6 +17,7 @@ import { THwidSettings } from '@libs/contracts/models';
 
 import { UserHwidDeviceEvent } from '@integration-modules/notifications/interfaces';
 
+import type { BrokerEntity } from '@modules/brokers/entities';
 import { ExternalSquadEntity } from '@modules/external-squads/entities/external-squad.entity';
 import { GetCachedExternalSquadSettingsQuery } from '@modules/external-squads/queries/get-cached-external-squad-settings';
 import { GetCachedTemplateNameQuery } from '@modules/external-squads/queries/get-template-name';
@@ -967,6 +968,33 @@ export class SubscriptionService {
                 }),
             );
         }
+    }
+
+    // Brokers get this rather than the full connection keys: just what @MTProxybot asks for.
+    public async getTelegramLinksByUserId(
+        userId: number,
+        broker?: BrokerEntity,
+    ): Promise<TResult<{ links: string[] }>> {
+        if (broker) {
+            const owned = await this.queryBus.execute(
+                new GetUserByUniqueFieldQuery(
+                    { id: BigInt(userId), brokerUuid: broker.uuid },
+                    { activeInternalSquads: false },
+                ),
+            );
+
+            if (!owned.isOk || !owned.response) {
+                return fail(ERRORS.USER_NOT_FOUND);
+            }
+        }
+
+        const keys = await this.getConnectionKeysByUserId(userId);
+
+        if (!keys.isOk) {
+            return keys;
+        }
+
+        return ok({ links: keys.response.enabledKeys.filter((key) => key.startsWith('tg://')) });
     }
 
     public async getConnectionKeysByUserId(

@@ -122,6 +122,11 @@ export class TelegramClient {
         return r.message_thread_id;
     }
 
+    /** Renames a forum topic. Telegram refuses an unchanged name (TOPIC_NOT_MODIFIED). */
+    async editForumTopic(chatId: string, threadId: number, name: string): Promise<void> {
+        await this.call('editForumTopic', { chat_id: chatId, message_thread_id: threadId, name });
+    }
+
     /**
      * Creates a forum topic with a pinned header message. The Bot API can't pin a topic in the
      * topic list, so the header inside it is pinned instead (best effort, needs the pin right).

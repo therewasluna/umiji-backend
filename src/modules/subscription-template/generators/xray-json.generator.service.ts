@@ -1,10 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 
 import { isNonEmptyObject } from '@common/utils';
-import type {
-    TUmijiInjectorSelectFrom,
-    TUmijiInjectorSelector,
-} from '@libs/contracts/models';
+import type { TUmijiInjectorSelectFrom, TUmijiInjectorSelector } from '@libs/contracts/models';
 
 import { applyHostMapper } from '../host-mapper';
 import { ResolvedProxyConfig } from '../resolve-proxy/interfaces';
@@ -332,6 +329,9 @@ export class XrayJsonGeneratorService {
                 return PROTOCOL_BUILDERS.shadowsocks(host);
             case 'hysteria':
                 return PROTOCOL_BUILDERS.hysteria(host);
+            // render-templates.service.ts filters these out before they get here.
+            case 'mtproto':
+                return {};
         }
     }
 

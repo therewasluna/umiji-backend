@@ -239,6 +239,30 @@ export class HostsRepository implements ICrud<HostsEntity> {
             .execute();
     }
 
+    public async hasMtprotoHost(uuids: string[]): Promise<boolean> {
+        if (uuids.length === 0) {
+            return false;
+        }
+
+        const host = await this.qb.kysely
+            .selectFrom('hosts')
+            .innerJoin(
+                'configProfileInbounds',
+                'configProfileInbounds.uuid',
+                'hosts.configProfileInboundUuid',
+            )
+            .select('hosts.uuid')
+            .where(
+                'hosts.uuid',
+                'in',
+                uuids.map((u) => getKyselyUuid(u)),
+            )
+            .where('configProfileInbounds.type', '=', 'mtproto')
+            .executeTakeFirst();
+
+        return host !== undefined;
+    }
+
     public async getTemplatesByUuids(uuids: string[]) {
         if (uuids.length === 0) {
             return [];
