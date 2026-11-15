@@ -1,0 +1,10 @@
+# Only what the Dockerfile copies matters; keep secrets and bulky local folders out of the build context.
+.git
+**/node_modules
+**/dist
+**/.env
+**/.env.*
+!**/.env.sample
+tools/dev/dist-*
+# CI checks the frontend out here to build it
+umiji-frontend

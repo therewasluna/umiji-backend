@@ -6,8 +6,7 @@
 # FRONTEND_DIR  checkout of umiji-frontend (default: ../umiji-frontend or ../frontend)
 #
 # The Dockerfile downloads the frontend zip and the Xray validator files, so they are served from a
-# throwaway local web server: the frontend built from FRONTEND_DIR, the validator from the assets release
-# (fetched with gh, so it also works while the repo is private).
+# throwaway local web server: the frontend built from FRONTEND_DIR, the validator from the assets release.
 set -euo pipefail
 
 BACKEND=$(cd "$(dirname "$0")/.." && pwd)
@@ -39,8 +38,9 @@ fi
 (cd "$FRONTEND" && zip -qr "$WORK/umiji-frontend.zip" ./dist)
 
 echo "==> fetching the Xray validator from the assets release"
-gh release download assets-1 --repo therewasluna/umiji --dir "$WORK" \
-    --pattern main.wasm --pattern wasm_exec.js --pattern 'xray.schema*.json'
+for f in main.wasm wasm_exec.js xray.schema.json xray.schema.cn.json; do
+    curl -fsSL --retry 3 -o "$WORK/$f" "https://github.com/therewasluna/umiji/releases/download/assets-1/$f"
+done
 
 python3 -m http.server "$PORT" --bind 127.0.0.1 --directory "$WORK" >/dev/null 2>&1 &
 SERVER=$!

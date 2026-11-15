@@ -1,15 +1,20 @@
+# The built frontend as umiji-frontend.zip. CI replaces this stage with
+# --build-context frontend-zip=<folder holding the zip>; otherwise it's downloaded from FRONTEND_URL.
+FROM alpine:3.19 AS frontend-zip
+ARG FRONTEND_URL=https://github.com/therewasluna/umiji-frontend/releases/latest/download/umiji-frontend.zip
+RUN apk add --no-cache curl ca-certificates && curl -fL ${FRONTEND_URL} -o /umiji-frontend.zip
+
 FROM alpine:3.19 AS frontend
 WORKDIR /opt/frontend
 
 ARG BRANCH=main
-ARG FRONTEND_URL=https://github.com/therewasluna/umiji-frontend/releases/latest/download/umiji-frontend.zip
 ARG SINGBOX_SCHEMA_URL=https://github.com/BlackDuty/sing-box-schema/releases/download/v1.13.13/schema.json
 ARG MIHOMO_SCHEMA_URL=https://github.com/dongchengjie/meta-json-schema/releases/download/v1.19.29/meta-json-schema.json
 # Xray config validator (WASM build of Xray-core) and its JSON schemas
 ARG UMIJI_ASSETS_URL=https://github.com/therewasluna/umiji/releases/download/assets-1
 
+COPY --from=frontend-zip /umiji-frontend.zip frontend.zip
 RUN apk add --no-cache curl unzip ca-certificates \
-    && curl -L ${FRONTEND_URL} -o frontend.zip \
     && unzip frontend.zip -d frontend_temp \
     && curl -fL ${UMIJI_ASSETS_URL}/wasm_exec.js -o frontend_temp/dist/assets/wasm_exec.js \
     && curl -fL ${UMIJI_ASSETS_URL}/xray.schema.json -o frontend_temp/dist/assets/xray.schema.json \
