@@ -1,0 +1,41 @@
+# Built-in HTTPS for the panel. It takes the domains from .env, so most installs never edit this file.
+# After an edit: docker compose restart umiji-caddy
+
+# Only with a CDN in front of the domains (e.g. Cloudflare's orange cloud): remove the # from these six
+# lines and list the CDN's IP ranges (https://www.cloudflare.com/ips/), so Caddy takes the visitor's IP
+# from the CDN. Strict reads X-Forwarded-For from the right, so an entry the visitor wrote is never used.
+#{
+#	servers {
+#		trusted_proxies static 173.245.48.0/20 103.21.244.0/22 2400:cb00::/32
+#		trusted_proxies_strict
+#	}
+#}
+
+{$PANEL_DOMAIN} {
+	# Bot broadcast photos are up to 10 MB.
+	request_body {
+		max_size 20MB
+	}
+
+	# A sub page on another server (SUB_PAGE_IP in .env) passes its visitors' IPs on to the panel;
+	# nobody else may. Left empty, it matches nobody.
+	@subpage client_ip {$SUB_PAGE_IP}
+	reverse_proxy @subpage umiji:3000
+
+	# The panel reads the visitor's IP from this header, so Caddy always sets it.
+	reverse_proxy umiji:3000 {
+		header_up X-Umiji-Real-IP {client_ip}
+	}
+}
+
+# The sub page, when it runs on this server too (SUB_PAGE_HERE=yes in .env).
+(sub-page-yes) {
+	{$SUB_DOMAIN} {
+		reverse_proxy umiji-subscription-page:3010 {
+			header_up X-Forwarded-For {client_ip}
+		}
+	}
+}
+(sub-page-no) {
+}
+import sub-page-{$SUB_PAGE_HERE}

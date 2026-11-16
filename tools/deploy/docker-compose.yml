@@ -1,5 +1,5 @@
-# Umiji: the panel (with Postgres and Valkey) and the subscription page, on one server or on
-# separate ones. COMPOSE_PROFILES in .env sets what runs here. See DEPLOY.md.
+# Umiji panel, with Postgres, Valkey and Caddy for HTTPS. The sub page and the nodes have their own
+# installs. Settings are in .env; the secrets are made on the first start, in ./secrets. See DEPLOY.md.
 name: umiji
 
 x-common: &common
@@ -17,18 +17,32 @@ x-common: &common
       max-file: 5
 
 services:
+  # Makes the missing secrets in ./secrets (APP_SECRET, the database password, ...), then exits.
+  umiji-secrets:
+    image: ghcr.io/therewasluna/umiji-panel:latest
+    container_name: umiji-secrets
+    entrypoint: ['/bin/sh', '-c', '. /opt/app/docker-secrets.sh && make_secrets']
+    network_mode: none
+    volumes:
+      - ./secrets:/var/lib/umiji/secrets
+
   umiji:
-    image: umiji-panel:latest
-    pull_policy: never # built by tools/deploy.sh; never fetch a same-named image from Docker Hub
-    profiles: [panel]
+    image: ghcr.io/therewasluna/umiji-panel:latest
     container_name: umiji
     hostname: umiji
     <<: *common
-    env_file: panel.env
+    env_file: .env
+    environment:
+      PANEL_DOMAIN: ${PANEL_DOMAIN:?Put your panel domain in PANEL_DOMAIN in .env}
+      SUB_PUBLIC_DOMAIN: ${SUB_PUBLIC_DOMAIN:-${SUB_DOMAIN:?Put your sub page domain in SUB_DOMAIN in .env}}
+      FRONT_END_DOMAIN: ${FRONT_END_DOMAIN:-*}
+      METRICS_USER: ${METRICS_USER:-admin}
+      REDIS_SOCKET: /var/run/valkey/valkey.sock
     # Lets a node proxy on this server be set as 127.0.0.1 (the panel maps it to host.docker.internal).
     extra_hosts:
       - host.docker.internal:host-gateway
     volumes:
+      - ./secrets:/var/lib/umiji/secrets:ro
       - valkey-socket:/var/run/valkey
     ports:
       - 127.0.0.1:3000:3000
@@ -40,6 +54,8 @@ services:
       retries: 3
       start_period: 30s
     depends_on:
+      umiji-secrets:
+        condition: service_completed_successfully
       umiji-db:
         condition: service_healthy
       umiji-redis:
@@ -47,27 +63,31 @@ services:
 
   umiji-db:
     image: postgres:18.4
-    profiles: [panel]
     container_name: umiji-db
     hostname: umiji-db
     shm_size: 512mb
     <<: *common
-    env_file: panel.env
     environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+      POSTGRES_PASSWORD_FILE: /run/umiji-secrets/db_password
       TZ: UTC # DO NOT CHANGE DATABASE TIMEZONE. IT MUST BE UTC.
     ports:
       - 127.0.0.1:6767:5432
     volumes:
       - umiji-db-data:/var/lib/postgresql
+      - ./secrets:/run/umiji-secrets:ro
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}']
       interval: 3s
       timeout: 10s
       retries: 3
+    depends_on:
+      umiji-secrets:
+        condition: service_completed_successfully
 
   umiji-redis:
     image: valkey/valkey:9-alpine
-    profiles: [panel]
     container_name: umiji-redis
     hostname: umiji-redis
     <<: *common
@@ -88,19 +108,8 @@ services:
       timeout: 3s
       retries: 3
 
-  umiji-subscription-page:
-    image: umiji-subscription-page:latest
-    pull_policy: never
-    profiles: [subpage]
-    container_name: umiji-subscription-page
-    hostname: umiji-subscription-page
-    <<: *common
-    env_file: subpage.env
-    ports:
-      - 127.0.0.1:3010:3010
-
-  # Built-in HTTPS (the caddy profile): Caddy gets and renews the certificates itself.
-  # up.sh writes caddy/Caddyfile from .env.
+  # Built-in HTTPS (the caddy profile, on by default in .env): gets and renews the certificates itself.
+  # It reads the domains from .env. After editing caddy/Caddyfile: docker compose restart umiji-caddy
   umiji-caddy:
     image: caddy:2.10.2
     profiles: [caddy]
@@ -108,8 +117,10 @@ services:
     hostname: umiji-caddy
     <<: *common
     environment:
-      # Changes when up.sh writes a different Caddyfile, so the container restarts with it.
-      CADDYFILE_HASH: ${CADDYFILE_HASH:-}
+      PANEL_DOMAIN: ${PANEL_DOMAIN}
+      SUB_DOMAIN: ${SUB_DOMAIN}
+      SUB_PAGE_HERE: ${SUB_PAGE_HERE:-yes}
+      SUB_PAGE_IP: ${SUB_PAGE_IP:-}
     ports:
       - 80:80
       - 443:443
@@ -120,6 +131,7 @@ services:
       - umiji-caddy-config:/config
 
 networks:
+  # The sub page's install joins this network when it runs on the same server.
   umiji-network:
     name: umiji-network
     driver: bridge

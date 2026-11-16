@@ -2,6 +2,9 @@
 
 echo "Starting entrypoint script..."
 
+. /opt/app/docker-secrets.sh
+load_secrets
+
 PRISMA="/opt/app/node_modules/.bin/prisma"
 
 echo "Migrating database..."
