@@ -95,3 +95,9 @@ mode: each instance handles a bot's updates on its own, so with more than one, t
 moment can both get past the trial's daily limit. Bot tokens are stored encrypted with
 `APP_SECRET`; changing `APP_SECRET` means brokers have to save their token again. A token can run in one place
 only: connecting it here replaces any webhook, so stop any other app using that token first.
+
+The easy way to switch is the installer's `umiji` command → **Store bots**: pick polling or webhook, and for webhook
+a domain (Enter takes the panel's). On another domain the built-in Caddy can serve it: the command writes
+`caddy/bot-webhook.caddy`, which the Caddyfile imports, and reloads Caddy. With your own reverse proxy or a tunnel,
+it prints the `location` to add. It then restarts the panel, which moves every connected bot over, and posts to the
+webhook once to check that it answers.

@@ -42,6 +42,7 @@ And it adds the `umiji` command. Type `umiji` on the server any time (or run the
 | -------------------- | ------------------------------------------------------------------------------------------- |
 | **Install / update** | The tick list again: add a part this server doesn't run yet, or update the ones you tick    |
 | **Update all**       | The newest version of everything here, after a database backup                              |
+| **Store bots**       | Switches the brokers' Telegram bots between polling and webhook (see docs/BROKERS.md)       |
 | **Owner password**   | A new password for the owner account if you forgot it; it also turns password login back on |
 | **Back up**          | The whole database and its secret in one file in `/opt/umiji/backups/` (see Backups)        |
 | **Restore**          | Puts a backup back. It **deletes the current database**, after backing it up first          |
@@ -103,7 +104,7 @@ Optional panel settings go in the same file. Copy the lines you need from
 | `TELEGRAM_BOT_PROXY`                                                           | Telegram is blocked on this server, e.g. `socks5://172.17.0.1:1080`. The broker bots use it too. Inside Docker, `127.0.0.1` is the container itself, so use the host's Docker IP (`172.17.0.1`) or a proxy container's name. |
 | `IS_TELEGRAM_NOTIFICATIONS_ENABLED`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_NOTIFY_*` | You want the panel's own Telegram notifications.                                                                                                                                                                             |
 | `SUB_PUBLIC_DOMAIN`                                                            | The sub page uses `CUSTOM_SUB_PREFIX`: set it to the domain plus the prefix, e.g. `sub.example.com/sub`. Otherwise it's `SUB_DOMAIN`.                                                                                        |
-| `BROKER_BOT_WEBHOOK_DOMAIN`                                                    | Leave unset. Broker bots long-poll by default. See `docs/BROKERS.md` for webhook mode.                                                                                                                                       |
+| `BROKER_BOT_WEBHOOK_DOMAIN`                                                    | Leave unset. Broker bots long-poll by default. `umiji` → **Store bots** sets it; see `docs/BROKERS.md`.                                                                                                                                       |
 
 ## 4. Start it
 
@@ -450,7 +451,7 @@ docker compose logs -f umiji-caddy              # certificates and HTTPS
 docker compose restart umiji                    # restart the panel
 docker compose down                             # stop everything (data stays)
 docker compose up -d                            # start everything again
-umiji                                           # menu: update, back up, restore, owner password, uninstall
+umiji                                           # menu: update, store bots, back up, restore, owner password, uninstall
 cat secrets/metrics_pass                        # password for http://127.0.0.1:3001/metrics (user admin)
 ```
 

@@ -39,3 +39,7 @@
 (sub-page-no) {
 }
 import sub-page-{$SUB_PAGE_HERE}
+
+# The store bots' webhook on a domain of its own: the umiji command's Store bots option writes it to
+# bot-webhook.caddy here. With no such file this line does nothing.
+import bot-webhook*.caddy
