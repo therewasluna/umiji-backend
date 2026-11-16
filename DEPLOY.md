@@ -104,7 +104,7 @@ Optional panel settings go in the same file. Copy the lines you need from
 | `TELEGRAM_BOT_PROXY`                                                           | Telegram is blocked on this server, e.g. `socks5://172.17.0.1:1080`. The broker bots use it too. Inside Docker, `127.0.0.1` is the container itself, so use the host's Docker IP (`172.17.0.1`) or a proxy container's name. |
 | `IS_TELEGRAM_NOTIFICATIONS_ENABLED`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_NOTIFY_*` | You want the panel's own Telegram notifications.                                                                                                                                                                             |
 | `SUB_PUBLIC_DOMAIN`                                                            | The sub page uses `CUSTOM_SUB_PREFIX`: set it to the domain plus the prefix, e.g. `sub.example.com/sub`. Otherwise it's `SUB_DOMAIN`.                                                                                        |
-| `BROKER_BOT_WEBHOOK_DOMAIN`                                                    | Leave unset. Broker bots long-poll by default. `umiji` → **Store bots** sets it; see `docs/BROKERS.md`.                                                                                                                                       |
+| `BROKER_BOT_WEBHOOK_DOMAIN`                                                    | Leave unset. Broker bots long-poll by default. `umiji` → **Store bots** sets it; see `docs/BROKERS.md`.                                                                                                                      |
 
 ## 4. Start it
 
