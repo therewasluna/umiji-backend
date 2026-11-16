@@ -61,6 +61,20 @@ export namespace CreateUserCommand {
             .min(0, 'Traffic limit must be greater than 0')
             .optional()
             .describe('Optional. Traffic limit in bytes. Set to 0 for unlimited traffic.'),
+        usedTrafficBytes: z
+            .int()
+            .min(0)
+            .optional()
+            .describe(
+                'Optional. Traffic the user already used, for users moved from another panel. Ignored for brokers.',
+            ),
+        lifetimeUsedTrafficBytes: z
+            .int()
+            .min(0)
+            .optional()
+            .describe(
+                'Optional. All-time traffic, for users moved from another panel. Never less than usedTrafficBytes. Ignored for brokers.',
+            ),
         trafficLimitStrategy: z.optional(
             z
                 .enum(RESET_PERIODS)

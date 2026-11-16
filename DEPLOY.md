@@ -38,15 +38,16 @@ per step, and when a step fails, what happened and how to fix it. The whole log 
 
 And it adds the `umiji` command. Type `umiji` on the server any time (or run the line above again) for a menu:
 
-| Menu item            | What it does                                                                                |
-| -------------------- | ------------------------------------------------------------------------------------------- |
-| **Install / update** | The tick list again: add a part this server doesn't run yet, or update the ones you tick    |
-| **Update all**       | The newest version of everything here, after a database backup                              |
-| **Store bots**       | Switches the brokers' Telegram bots between polling and webhook (see docs/BROKERS.md)       |
-| **Owner password**   | A new password for the owner account if you forgot it; it also turns password login back on |
-| **Back up**          | The whole database and its secret in one file in `/opt/umiji/backups/` (see Backups)        |
-| **Restore**          | Puts a backup back. It **deletes the current database**, after backing it up first          |
-| **Uninstall**        | Removes the panel, the sub page or the node. The panel's data stays unless you say so       |
+| Menu item            | What it does                                                                                                                                                                                                                                                                       |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Install / update** | The tick list again: add a part this server doesn't run yet, or update the ones you tick                                                                                                                                                                                           |
+| **Update all**       | The newest version of everything here, after a database backup                                                                                                                                                                                                                     |
+| **Migrate**          | Users, inbounds, squads and hosts from Marzban, PasarGuard, Marzneshin, 3x-ui, Remnawave or Hiddify, through their API; old subscription links keep working. On an older install, run the line above with `migrate` at the end first. See [the guide](https://umiji.wiki/migrate/) |
+| **Store bots**       | Switches the brokers' Telegram bots between polling and webhook (see docs/BROKERS.md)                                                                                                                                                                                              |
+| **Owner password**   | A new password for the owner account if you forgot it; it also turns password login back on                                                                                                                                                                                        |
+| **Back up**          | The whole database and its secret in one file in `/opt/umiji/backups/` (see Backups)                                                                                                                                                                                               |
+| **Restore**          | Puts a backup back. It **deletes the current database**, after backing it up first                                                                                                                                                                                                 |
+| **Uninstall**        | Removes the panel, the sub page or the node. The panel's data stays unless you say so                                                                                                                                                                                              |
 
 Updating needs GitHub and ghcr.io; the rest works without the internet. With `sub` or `node` at the end, the line
 above installs only that part. The [setup guide](https://umiji.wiki/guide/) walks through it with screenshots.

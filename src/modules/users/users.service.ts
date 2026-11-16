@@ -124,10 +124,13 @@ export class UsersService {
                 brokerUuid: broker?.uuid ?? null,
             });
 
+            // Moved-in traffic only from the owner: a broker could otherwise start users at any count.
+            const used = broker ? 0 : (dto.usedTrafficBytes ?? 0);
             const created = await this.userRepository.create(
                 userEntity,
                 dto.activeInternalSquads,
                 broker?.usersLimit ?? null,
+                { used, lifetime: broker ? 0 : Math.max(used, dto.lifetimeUsedTrafficBytes ?? 0) },
             );
 
             if (!created) return fail(ERRORS.BROKER_USERS_LIMIT_REACHED);

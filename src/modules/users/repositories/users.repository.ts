@@ -90,6 +90,7 @@ export class UsersRepository {
         entity: BaseUserEntity,
         internalSquadUuids: string[] = [],
         brokerUsersLimit: null | number = null,
+        traffic: { used: number; lifetime: number } = { used: 0, lifetime: 0 },
     ): Promise<null | {
         id: bigint;
     }> {
@@ -112,8 +113,8 @@ export class UsersRepository {
                 ...model,
                 traffic: {
                     create: {
-                        usedTrafficBytes: 0,
-                        lifetimeUsedTrafficBytes: 0,
+                        usedTrafficBytes: traffic.used,
+                        lifetimeUsedTrafficBytes: traffic.lifetime,
                     },
                 },
                 activeInternalSquads: {
