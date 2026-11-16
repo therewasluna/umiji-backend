@@ -23,13 +23,43 @@ server needs only Docker. Every command in this guide runs on the server.
 
 ---
 
+## The quick way: the installer
+
+On the server, as root:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/therewasluna/umiji/main/install.sh)
+```
+
+It installs Docker if it's missing and asks for your panel's domain. Every other question has a ready answer that
+Enter accepts. It sets up the panel in `/opt/umiji` and the sub page in `/opt/umiji-sub`, the same way as the steps
+below. Tick **Node** too and it runs a node in `/opt/umiji-node` and adds it to the panel's Nodes as **Panel server**. It also makes the owner account and the sub page's API token, so steps 6 and 7 are done too. It shows one line
+per step, and when a step fails, what happened and how to fix it. The whole log is in `/var/log/umiji-install.log`.
+
+And it adds the `umiji` command. Type `umiji` on the server any time (or run the line above again) for a menu:
+
+| Menu item            | What it does                                                                                |
+| -------------------- | ------------------------------------------------------------------------------------------- |
+| **Install / update** | The tick list again: add a part this server doesn't run yet, or update the ones you tick    |
+| **Update all**       | The newest version of everything here, after a database backup                              |
+| **Owner password**   | A new password for the owner account if you forgot it; it also turns password login back on |
+| **Back up**          | The whole database and its secret in one file in `/opt/umiji/backups/` (see Backups)        |
+| **Restore**          | Puts a backup back. It **deletes the current database**, after backing it up first          |
+| **Uninstall**        | Removes the panel, the sub page or the node. The panel's data stays unless you say so       |
+
+Updating needs GitHub and ghcr.io; the rest works without the internet. With `sub` or `node` at the end, the line
+above installs only that part. The [setup guide](https://umiji.wiki/guide/) walks through it with screenshots.
+
+The rest of this guide does the same install by hand and explains every setting.
+
 ## 1. What you need
 
 - **A server** with root access, x86-64 (amd64) or 64-bit ARM (arm64). Ubuntu or Debian is easiest; any Linux that
   runs Docker works.
 - **Two domains**: one for the panel (e.g. `panel.example.com`) and one for the sub page (e.g. `sub.example.com`).
   Point the panel's DNS **A record** at this server, and the sub page's at the server that will run it. Do this
-  first: certificates need it.
+  first: certificates need it. The [setup guide](https://umiji.wiki/guide/#dns) shows how, at your domain company or
+  with Cloudflare.
 
 ## 2. Install Docker
 
@@ -47,6 +77,11 @@ curl -fsSL -o docker-compose.yml $base/docker-compose.yml
 curl -fsSL -o caddy/Caddyfile    $base/caddy/Caddyfile
 curl -fsSL -o .env               $base/env.example
 chmod 600 .env
+```
+
+Then open the settings file:
+
+```bash
 nano .env
 ```
 
@@ -272,8 +307,11 @@ the panel: **Umiji Settings → API Tokens → Create**.
 
 ## 8. Add nodes
 
-Add each node in the panel: **Nodes → Create node**. **Automatic install** logs in to the node server over SSH, sets
-up Docker and the node, and adds it to the panel. **Manual setup** shows the `docker-compose.yml` to run there
+A node on the panel's own server is easiest with the installer (see The quick way): it adds that node to the panel
+by itself. Add every other node in the panel: **Nodes → Create node**. **Automatic install** logs in to the node server over SSH, sets
+up Docker and the node, and adds it to the panel. **Manual setup** shows the node's secret key and a
+`docker-compose.yml`. On the node server, the installer can use the key:
+`bash <(curl -fsSL https://raw.githubusercontent.com/therewasluna/umiji/main/install.sh) node`. Or run the compose file
 yourself; the [node's README](https://github.com/therewasluna/umiji-node#install) has the steps. Nodes run
 `ghcr.io/therewasluna/umiji-node`, on x86-64 or ARM.
 
@@ -305,8 +343,8 @@ docker compose up -d
 docker image prune -f         # removes the old images
 ```
 
-Only containers whose image changed are restarted. To stay on a specific build instead of the newest one, put one of
-its tags (see Reference) in place of `latest` in `docker-compose.yml`.
+Only containers whose image changed are restarted. `umiji` → **Update all** does the same. To stay on a specific
+build instead of the newest one, put one of its tags (see Reference) in place of `latest` in `docker-compose.yml`.
 
 The single-owner migration requires at most one existing `ADMIN` row. If a previous registration race created
 multiple owners, resolve those accounts before upgrading or the migration will stop.
@@ -336,40 +374,71 @@ Moving it back works the same way in reverse.
 
 ### Backups
 
-A backup is the database dump plus the `secrets/` folder. Without the secrets' `APP_SECRET`, brokers have to
-reconnect their bots and everyone has to log in again. The update block above dumps the database to
-`/opt/umiji/backups/` before every update; nothing deletes old ones, so clear them out now and then. To take one by
-hand, and copy it to your computer:
+Type `umiji` and pick **Back up**. It saves one file, `/opt/umiji/backups/umiji-<date>.tar`, which holds:
+
+- `database.sql.gz`, the whole database (`pg_dump`);
+- `app_secret`, the `APP_SECRET` that the owner's password and the brokers' bot tokens are keyed to. Without it,
+  brokers have to reconnect their bots and the owner needs a new password;
+- `sub_token`, the sub page's API token, when the sub page runs on this server.
+
+Keep it private: it unlocks everything. Copy it off the server, from your computer:
 
 ```bash
-# on the server
+scp root@203.0.113.10:/opt/umiji/backups/umiji-20261116-141537.tar .
+```
+
+**Update all** makes one before every update too. Nothing deletes old ones, so clear them out now and then.
+
+To take one by hand, dump the database and keep a copy of `secrets/` with it:
+
+```bash
 cd /opt/umiji
 mkdir -p backups
 docker compose exec -T umiji-db sh -c 'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' | gzip > backups/manual.sql.gz
-
-# on your computer
-scp root@203.0.113.10:/opt/umiji/backups/manual.sql.gz .
-scp -r root@203.0.113.10:/opt/umiji/secrets .
 ```
 
 ### Restore a backup
 
-This replaces the whole database with the backup.
+Restoring **deletes the panel's whole database**: users, nodes, brokers, settings and the owner account. The backup's
+take their place, and its owner account signs in.
+
+Copy the backup into `/opt/umiji/backups/`, type `umiji` and pick **Restore**. It lists the backups there and asks for
+one. It makes a backup of the database as it is now, so you can go back, and asks before it deletes anything. If
+the restore fails partway, nothing changes. It also takes `.sql.gz` dumps made by hand. Those don't hold
+`APP_SECRET`, so from another server, also copy that server's `secrets/app_secret` into `/opt/umiji/secrets/` and run
+`docker compose restart umiji`.
+
+**On a new server:** install the panel with the installer, copy the backup into `/opt/umiji/backups/`, then pick
+**Restore**. A backup from a newer panel needs this one updated first.
+
+By hand, in one transaction, so a failed restore changes nothing:
 
 ```bash
 cd /opt/umiji
 ls backups/                                         # pick one, then use its name below
 docker compose stop umiji
-docker compose exec -T umiji-db sh -c 'dropdb -U "$POSTGRES_USER" --force --maintenance-db=template1 "$POSTGRES_DB" && createdb -U "$POSTGRES_USER" --maintenance-db=template1 "$POSTGRES_DB"'
-gunzip -c backups/20261024-141537.sql.gz | docker compose exec -T umiji-db sh -c 'psql -q -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" "$POSTGRES_DB"' > /dev/null
+# for a .sql.gz, put gunzip -c backups/manual.sql.gz in place of the tar ... | gunzip -c part
+{ echo 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;'; tar -xOf backups/umiji-20261116-141537.tar database.sql.gz | gunzip -c; } | docker compose exec -T umiji-db sh -c 'psql -q -v ON_ERROR_STOP=1 --single-transaction -U "$POSTGRES_USER" "$POSTGRES_DB"' > /dev/null
+docker compose restart umiji-redis                  # empties the cache of the old settings
 docker compose start umiji
 ```
 
 If you're going back because a new version broke something, also go back to the older image: put its tag in place of
 `latest` in `docker-compose.yml` and run `docker compose up -d`.
 
-**On a new server:** do steps 2 and 3, copy the old `secrets/` folder to `/opt/umiji/secrets/` before the first
-`docker compose up -d`, copy the backup to `/opt/umiji/backups/`, then run the block above.
+### Forgot the owner's password
+
+Type `umiji` and pick **Owner password**. It shows the owner's username, asks for a new password (or makes one) and
+turns password login back on, in case it was switched off and the other sign-in methods are lost.
+
+### Uninstall
+
+Type `umiji` and pick **Uninstall**. It removes the containers, their images and the folder. For the panel it asks
+whether to delete the database, secrets and settings too. If you keep them, installing the panel again brings
+everything back. The backups always stay. When nothing is left, it removes the `umiji` command too; Docker stays.
+
+By hand: `cd /opt/umiji && docker compose down` stops and removes the panel. Adding `--volumes` deletes the
+database.
 
 ### Useful commands
 
@@ -381,7 +450,7 @@ docker compose logs -f umiji-caddy              # certificates and HTTPS
 docker compose restart umiji                    # restart the panel
 docker compose down                             # stop everything (data stays)
 docker compose up -d                            # start everything again
-docker exec -it umiji cli                       # rescue menu: reset the owner, re-enable password login, ...
+umiji                                           # menu: update, back up, restore, owner password, uninstall
 cat secrets/metrics_pass                        # password for http://127.0.0.1:3001/metrics (user admin)
 ```
 
@@ -391,6 +460,7 @@ cat secrets/metrics_pass                        # password for http://127.0.0.1:
 
 | Problem                                                                              | Fix                                                                                                                                                                                                                                                                                                              |
 | ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The installer stopped with an error                                                  | It shows what happened and how to fix it; the whole log is in `/var/log/umiji-install.log`. Fix it and type `umiji` (or run the installer again): it keeps what it has done.                                                                                                                                     |
 | `docker compose` says `required variable PANEL_DOMAIN is missing a value`            | Fill in `PANEL_DOMAIN` and `SUB_DOMAIN` in `.env` (step 3).                                                                                                                                                                                                                                                      |
 | The panel page doesn't load, and its log says `Reverse proxy and HTTPS are required` | Open it through Caddy or nginx over **https**. With nginx, check that the block sets `X-Forwarded-For` and `X-Forwarded-Proto`, and that certbot ran.                                                                                                                                                            |
 | `umiji-caddy` won't start: `address already in use`                                  | Something else has port 80 or 443, usually nginx or Apache. Stop it (`systemctl disable --now nginx`), or make `.env` say `COMPOSE_PROFILES=` and use nginx (step 5b).                                                                                                                                           |

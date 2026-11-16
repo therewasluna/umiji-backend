@@ -110,9 +110,6 @@ COPY ecosystem.config.js ./
 COPY docker-entrypoint.sh docker-secrets.sh ./
 
 RUN npm install -g pm2 \
-    && chmod +x /opt/app/dist/cli.js \
-    && printf '#!/bin/sh\n. /opt/app/docker-secrets.sh && load_secrets\nexec node /opt/app/dist/cli.js "$@"\n' > /usr/local/bin/cli \
-    && chmod +x /usr/local/bin/cli \
     && rm -rf /usr/local/lib/node_modules/npm \
         /usr/local/lib/node_modules/corepack \
         /usr/local/bin/npm \

@@ -13,7 +13,8 @@ make_secrets() {
     done
 }
 
-# Used by docker-entrypoint.sh and the cli command (docker exec doesn't see what the entrypoint exports).
+# Used by docker-entrypoint.sh and the umiji command's password change (docker exec doesn't see what
+# the entrypoint exports).
 load_secrets() {
     [ -s "$UMIJI_SECRETS/app_secret" ] || return 0
     : "${APP_SECRET:=$(cat "$UMIJI_SECRETS/app_secret")}"

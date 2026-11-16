@@ -50,7 +50,6 @@ function buildEntry() {
         app: './src/main.ts',
         processors: './src/bin/processors/processors.ts',
         scheduler: './src/bin/scheduler/scheduler.ts',
-        cli: './src/bin/cli/cli.ts',
         seed: './prisma/seed/config.seed.ts',
     };
 }
@@ -117,16 +116,6 @@ export default defineConfig({
                   new rspack.HotModuleReplacementPlugin(),
               ]
             : []),
-        ...(isDev
-            ? []
-            : [
-                  new rspack.BannerPlugin({
-                      banner: '#!/usr/bin/env node',
-                      raw: true,
-                      entryOnly: true,
-                      include: /cli\.js$/,
-                  }),
-              ]),
         ...(isGenDoc
             ? [
                   new rspack.BannerPlugin({
